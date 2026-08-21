@@ -262,6 +262,9 @@ export async function addCandidates(tabId, candidates) {
             }),
         elementId: preferDefined(existing.elementId, raw.elementId),
         alt: preferDefined(existing.alt, raw.alt),
+        // Sticky: once a capture is known to hold the bytes, later sightings
+        // over the network must not downgrade it back to a re-fetch.
+        harBody: Boolean(existing.harBody || raw.harBody),
         upgradeUrl: preferDefined(existing.upgradeUrl, raw.upgradeUrl),
         upgradeNote: preferDefined(existing.upgradeNote, raw.upgradeNote),
         frameUrl: preferDefined(existing.frameUrl, raw.frameUrl),

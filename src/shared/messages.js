@@ -125,6 +125,7 @@ export function sanitizeCandidate(raw) {
     elementId: str(raw.elementId, 64),
     structuralPath: path,
     inRepeatedGroup: bool(raw.inRepeatedGroup),
+    harBody: bool(raw.harBody),
     repeatDepth: Number.isInteger(raw.repeatDepth) && raw.repeatDepth >= 0 ? raw.repeatDepth : -1,
     classCounts,
     upgradeUrl: str(raw.upgradeUrl),

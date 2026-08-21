@@ -29,8 +29,10 @@ a `chrome.webRequest` observer (listener mode only); a MAIN-world interceptor at
 `document_start` that mines `fetch`/XHR JSON payloads for media URLs an SPA has
 not rendered yet; a DOM scanner covering `srcset`, `picture`, lazy `data-*`
 attributes, CSS `background-image`, inline `<svg>`, `<canvas>` and gallery
-`<a href>` links; and HAR import for a DevTools capture. An item seen by both
-the DOM and the network is `confirmed` and sorts first.
+`<a href>` links; and HAR import for a DevTools capture — which, when the
+capture was exported *with content*, saves the files straight out of the archive
+without touching the network. An item seen by both the DOM and the network is
+`confirmed` and sorts first.
 
 **Similarity** is `0.35·url + 0.25·structure + 0.20·dimensions + 0.10·type +
 0.10·host`, cut at `loose 0.45 / balanced 0.62 / strict 0.80`, clustered with
@@ -55,7 +57,7 @@ Chrome 120+. Loads unchanged in Arc, Dia, Brave and Edge; without
 `chrome.sidePanel` the panel opens in a popup window instead.
 
 ```sh
-npm test           # 94 unit tests, then a service-worker smoke test in Chrome
+npm test           # 112 unit tests, then a service-worker smoke test in Chrome
 npm run test:unit  # unit tests only, no browser needed
 npm run test:dash  # DRM boundary checked in the real panel (18 assertions)
 npm run screenshots
@@ -138,6 +140,30 @@ more honest.
 
 ---
 
+## Explore
+
+`explore` walks the app on its own: it scrolls each page to the bottom in steps
+so lazy loaders and infinite feeds fire, clicks the controls that reveal more
+media, follows same-origin links, and keeps one index across the whole walk. It
+is how you get at photos that only exist after a "load more", a lightbox, or a
+second page.
+
+Scrolling and following links are GET-shaped and reversible, so they are
+exhaustive. **Clicking is not**, and it is governed differently: on an app where
+you are signed in, an indiscriminate clicker eventually hits "Delete", "Pay" or
+"Log out". A click therefore needs a positive reason — the control either wraps
+media or reads as a media control — and everything else is refused. Form
+controls, anything inside a `<form>`, submit buttons, `download` attributes,
+`target="_blank"` and any label or class matching the transactional/destructive
+list are refused whatever else they look like. A link is never clicked; it is
+queued for navigation, where the same list is applied to the path, because
+`/logout` is a GET on most sites.
+
+Bounded by construction: 40 pages, 60 clicks and 40 scroll steps per page, a
+1.2 s gap between navigations, and a stop that reaches both the queue and the
+page. The rules live in `src/core/explore-policy.js` and are tested against a
+set of traps.
+
 ## DRM — a hard boundary
 
 **Magpie never circumvents DRM and contains no code path that could.**
@@ -167,6 +193,9 @@ it.
 - **No account, login or sync.** The index lives in session storage and dies with the tab.
 - **Clustering is capped** at 1200 items per view (the score matrix is quadratic). The remainder is listed ungrouped and the panel says so rather than hiding it.
 - **A hero image with the same dimensions as the grid below it will cluster with that grid.** Magpie detects that the two sit in different repeated structures and zeroes the structural term — but the remaining four terms floor at 0.4625 for two images sharing a host, a directory and a file type, so the dimension term alone carries the rest of the way to 0.62. At identical dimensions the pair scores 0.6625 and merges. That is a limit of the current term weights, not of the repeated-group test; `strict` separates them.
+- **The explorer's safety rules are lexical, and only English and Italian.** An icon-only control labelled in a third language is not clicked — it fails closed, so you lose media rather than trigger something. Widen `RISK_WORDS` / `OPPORTUNITY_WORDS` in `src/core/explore-policy.js` for another locale.
+- **The explorer has no rate-limit backoff.** The download queue honours 429 and `Retry-After`; the crawl only has a fixed 1.2 s gap between pages. On a site that throttles hard, slow it down or stop it.
+- **The explorer drives the tab you are looking at**, one page at a time, and cannot resume a crawl in a tab you have closed.
 - **It cannot see inside cross-origin iframes it is not injected into**, and no extension runs on `chrome://` pages or the Chrome Web Store.
 
 ## Not verified
@@ -175,7 +204,8 @@ Stated plainly rather than implied by silence:
 
 - **Arc, Dia, Brave and Edge have not been launched.** Nothing Chrome-only is used beyond `chrome.sidePanel`, which has a popup fallback, but that is an argument, not a test.
 - **The panel has been reviewed as screenshots, not used.** Nobody has driven it interactively for a long session; keyboard flow, scroll behaviour under load and hover states are unproven in practice.
-- **HAR import is tested against a synthetic HAR**, not one exported from DevTools.
+- **HAR import is tested against a synthetic HAR** — built from real image files, and proven to save them with the web server stopped, but not against an archive exported by DevTools itself.
+- **The explorer has only met a fixture app.** Two pages, four deliberate traps, everything on localhost. It has never walked a real third-party site, where the shapes are messier and the throttling is real.
 - **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests, a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel — not against Netflix or Spotify.
 - **No DASH manifest has been fetched from a live CDN.** HLS has (Apple's public test stream, downloaded for real with the generated command).
 - **The 122-item bulk download was measured once**, on localhost. Behaviour against a rate-limiting CDN rests on the retry/backoff code, which has not met a real 429.

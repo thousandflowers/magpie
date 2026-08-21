@@ -2,7 +2,7 @@
   "name": "magpie",
   "version": "0.1.0",
   "private": true,
-  "description": "Chrome extension (MV3) that finds every image, video and audio file a page loads or references, groups them by similarity, and downloads them in bulk. No build step, no runtime dependencies.",
+  "description": "Chrome extension (MV3) that finds every image, video and audio file a page loads or references, explores the app to load the rest, groups them by similarity, and downloads them in bulk. No build step, no runtime dependencies.",
   "keywords": [
     "chrome-extension",
     "manifest-v3",
@@ -14,7 +14,9 @@
     "clustering",
     "hls",
     "dash",
-    "har"
+    "har",
+    "crawler",
+    "lazy-loading"
   ],
   "license": "MIT",
   "author": "Eugenio Zamengo Pontrelli",

@@ -16,6 +16,11 @@ import {
 } from './downloader.js';
 import { createMenus, installMenuHandlers } from './context-menus.js';
 import { verifyBatch, loadSiteRules } from './upgrade-verify.js';
+import {
+  EXPLORE_MSG, startCrawl, stopCrawl, judgeCandidates, acceptLinks,
+  pageFinished, resumeAfterNavigation, crawlStatus, isCrawling, clearCrawl,
+  onExploreProgress,
+} from './explorer.js';
 import { MSG, SOURCE, STATUS, sanitizeCandidate } from '../shared/messages.js';
 import { log, warn, error } from '../shared/debug.js';
 
@@ -105,6 +110,14 @@ function bootstrap() {
     );
     if (progress.finished) reapSessions();
   });
+  onExploreProgress((tabId) => {
+    crawlStatus(tabId).then((status) => {
+      chrome.runtime.sendMessage(
+        { type: EXPLORE_MSG.PROGRESS, tabId, status },
+        () => void chrome.runtime.lastError,
+      );
+    });
+  });
   loadSiteRules();
 }
 
@@ -135,6 +148,7 @@ if (chrome.action && chrome.action.onClicked) {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   deleteTab(tabId);
+  clearCrawl(tabId);
 });
 
 if (chrome.runtime.onSuspend) {
@@ -159,12 +173,16 @@ const handlers = {
   async [MSG.PAGE_INFO](message, sender) {
     const tabId = tabIdFor(message, sender);
     if (tabId == null) return { ok: false };
-    if (message.navigation) {
+    const crawling = await isCrawling(tabId);
+    if (message.navigation && !crawling) {
       const options = await getOptions();
       await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory });
     }
     await setPageInfo(tabId, { url: message.url, title: message.title });
     refreshPanel(tabId);
+    // A crawl walks the tab from page to page; wiping the index on each hop
+    // would throw away exactly what it went to collect.
+    if (message.navigation && crawling) await resumeAfterNavigation(tabId);
     return { ok: true };
   },
 
@@ -325,6 +343,47 @@ const handlers = {
     if (tabId == null) return { ok: false };
     await openPanel(tabId, message.seed || null);
     return { ok: true };
+  },
+
+  async [EXPLORE_MSG.START](message, sender) {
+    const tabId = tabIdFor(message, sender);
+    if (tabId == null) return { ok: false };
+    const state = await getTab(tabId);
+    if (!state.pageUrl) return { ok: false, reason: 'no page to explore yet' };
+    const crawl = await startCrawl(tabId, state.pageUrl);
+    return { ok: true, status: await crawlStatus(tabId), started: Boolean(crawl) };
+  },
+
+  async [EXPLORE_MSG.STOP](message, sender) {
+    const tabId = tabIdFor(message, sender);
+    if (tabId == null) return { ok: false };
+    await stopCrawl(tabId, 'stopped by you');
+    return { ok: true, status: await crawlStatus(tabId) };
+  },
+
+  async [EXPLORE_MSG.JUDGE](message) {
+    // The content script has no judgement of its own; this is where the tested
+    // policy is applied.
+    return { ok: true, ...judgeCandidates(message.candidates) };
+  },
+
+  async [EXPLORE_MSG.LINKS](message, sender) {
+    const tabId = tabIdFor(message, sender);
+    if (tabId == null) return { ok: false };
+    return { ok: true, ...(await acceptLinks(tabId, message.links, message.pageUrl)) };
+  },
+
+  async [EXPLORE_MSG.PAGE_DONE](message, sender) {
+    const tabId = tabIdFor(message, sender);
+    if (tabId == null) return { ok: false };
+    await pageFinished(tabId, message);
+    return { ok: true };
+  },
+
+  async 'explore-status'(message, sender) {
+    const tabId = tabIdFor(message, sender);
+    if (tabId == null) return { ok: false };
+    return { ok: true, status: await crawlStatus(tabId) };
   },
 
   async 'patch-item'(message, sender) {

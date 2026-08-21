@@ -484,3 +484,120 @@ Screenshot 04 regenerated; it renders identically to the position-keyed version,
 which is the point — this was a maintainability fix, not a visual one. Shots 02
 and 03 came back byte-identical, so the committed README images needed no
 update.
+
+---
+
+# Sixth pass — HAR import saves from the capture, not from the network
+
+The module header claimed HAR import existed "because HAR entries keep response
+bodies the live page has already thrown away". It did not read those bodies:
+`parseHar` looked only at `content.mimeType` and `content.size`, and every
+download re-fetched the URL. That made the feature useless in exactly the case
+it was written for — an expired signed URL, a session behind a login, a file
+taken down.
+
+`decodeHarBody()` now reads `response.content.text`, honouring
+`encoding: "base64"` for binary bodies and treating anything else as UTF-8. A
+capture exported without content still imports; it simply has no bytes and falls
+back to the network, which is reported rather than hidden.
+
+**The bytes never enter the store.** `chrome.storage.session` has a quota and a
+capture can be hundreds of megabytes, so `parseHar` returns them in a separate
+`Map` that the panel holds in memory for as long as it is open; the item carries
+only a `harBody` boolean. Per-file and per-import budgets (64 MB / 512 MB) keep
+one oversized response from eating the import.
+
+Downloads split three ways: canvas and SVG captures, HAR bodies, and things that
+genuinely need fetching. Only the last goes to the background queue.
+
+Verified with the HTTP server **stopped**, so nothing could have come from the
+network: a HAR holding three images plus one control entry exported without a
+body.
+
+```
+import  : HAR: merged 4 new, 0 updated, 0 skipped, 3 with bodies (984 KB) saveable offline
+footer  : 3 saved locally · 0/1 fetched, 1 failed
+  001-beach-01.png  complete     335815
+  002-beach-02.png  complete     335807
+  003-beach-03.png  complete     335806
+  001-beach-04.png  interrupted  0  NETWORK_FAILED   <- the control, no body in the capture
+```
+
+The three byte counts match the originals exactly, and the control failed as it
+should. That contrast is the test: with the server down, a file can only have
+come from the capture.
+
+One honesty fix fell out of it. The progress line read `0/1 saved, 1 failed`
+while three files had just been written, because local saves are not part of the
+background queue and the queue owns that message. Every progress line now
+carries the local count, and "saved" became "fetched" where it means fetched.
+
+---
+
+# Seventh pass — the explorer
+
+Automatic exploration: scroll a page, click the controls that reveal more
+media, follow same-origin links, and keep the index across the whole walk.
+
+## The asymmetry that makes it safe
+
+Scrolling and following links are GET-shaped and reversible, so they are
+exhaustive. Clicking is not: on an app where the user is signed in, an
+indiscriminate clicker eventually hits "Delete", "Pay" or "Log out". So the two
+are governed differently, and **a click needs a positive reason** —
+`src/core/explore-policy.js` refuses by default and only approves a control that
+either wraps media or reads as a media control.
+
+Refused outright, whatever the label says: form controls, anything inside a
+`<form>`, submit buttons, `download` attributes, `target="_blank"`, and any
+accessible text or class token matching the transactional/destructive list
+(English and Italian). A `<a href>` is never clicked — it is queued for
+navigation instead, where `shouldFollow` applies the same word list to the path,
+because `/logout` is a GET on most sites.
+
+**The word lists are a real limitation**, not a flourish: lexical, two
+languages, and an icon-only control labelled in a third will simply not be
+clicked. That is the safe direction to fail in, and they sit in one exported
+object so a locale is a data change.
+
+## Where the decision lives
+
+Content scripts cannot import extension modules, so duplicating the rules in the
+page would mean two copies of the one thing that must never drift.
+`src/content/explorer.js` therefore makes no decisions at all: it describes
+candidate elements, ships the descriptions to the worker, and clicks back the
+indexes it is handed. One message per round, not per element.
+
+Crawl state lives in `chrome.storage.session` under `crawl:<tabId>`, so a worker
+restart mid-walk keeps the queue. While a crawl owns a tab the index is **not**
+reset on navigation — wiping it on each hop would throw away exactly what the
+walk went to collect.
+
+Bounded by construction: 40 pages, 60 clicks and 40 scroll steps per page, a
+1.2 s gap between navigations, two dry rounds before a page is called done, and
+a stop that reaches both the queue and the page.
+
+## Verified against a two-page fixture app
+
+Page 1 held two visible thumbnails, a "Mostra altre foto" button revealing four
+more, an "Ingrandisci" button opening a lightbox, a link to page 2 — and four
+traps: `Elimina account`, `Paga ora`, a submit button inside a form labelled
+*"Mostra altre foto"* (media wording, dangerous shape), and an `Esci` link. Each
+trap recorded a click in `localStorage`.
+
+```
+fine: pages 2, clicks 2, queued 0, note "nothing left to visit"
+indicizzati: 10
+  beach-01..06 (2 visibili + 4 dietro al bottone)
+  beach-07..09 (pagina 2)
+  hero-banner   (dentro il lightbox)
+bottoni distruttivi cliccati: NESSUNO
+```
+
+Everything hidden behind a click or a second page was found; the form-shaped
+button with media wording was refused on shape before its label was even read.
+
+One bug found and fixed in the same pass: `pageFinished` incremented the page
+counter in memory and then called `stopCrawl`, which re-reads from storage — so
+a finished crawl reported one page fewer than it had visited. The counters are
+now persisted before any branch that stops.

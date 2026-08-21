@@ -8,7 +8,7 @@ import {
 import {
   parseM3U8, parseMPD, parseISODuration, ytDlpCommand, ffmpegCommand, estimateBytes,
 } from '../src/core/manifest-parse.js';
-import { parseHar } from '../src/core/har-import.js';
+import { parseHar, decodeHarBody, MAX_BODY_BYTES } from '../src/core/har-import.js';
 import {
   classify, looksLikeMediaUrl, rejectionReason, extOf, dataUriBytes,
 } from '../src/core/media-types.js';
@@ -276,6 +276,81 @@ test('parseHar accepts raw JSON text and rejects non-HAR input', () => {
   assert.equal(parseHar(JSON.stringify(HAR)).items.length, 2);
   assert.match(parseHar('{').error, /Not valid JSON/);
   assert.match(parseHar({}).error, /log\.entries/);
+});
+
+test('decodeHarBody reads base64 and text bodies, and refuses the rest', () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const b64 = Buffer.from(png).toString('base64');
+  assert.deepEqual(
+    [...decodeHarBody({ text: b64, encoding: 'base64' })], [...png],
+    'a binary body round-trips byte for byte',
+  );
+  assert.deepEqual(
+    [...decodeHarBody({ text: '<svg/>' })],
+    [...new TextEncoder().encode('<svg/>')],
+    'a text body is encoded as UTF-8',
+  );
+  assert.equal(decodeHarBody({ size: 100 }), null, 'exported without content');
+  assert.equal(decodeHarBody({ text: '' }), null);
+  assert.equal(decodeHarBody(null), null);
+  assert.equal(decodeHarBody({ text: '!!not base64!!', encoding: 'base64' }), null,
+    'a malformed body does not throw');
+});
+
+test('parseHar carries the response bodies when the capture has them', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4, 5]);
+  const har = {
+    log: {
+      entries: [
+        {
+          startedDateTime: '2024-08-17T10:00:00.000Z',
+          request: { url: 'https://cdn.e.com/withbody.png', headers: [] },
+          response: {
+            status: 200, headers: [],
+            content: { mimeType: 'image/png', size: png.length, text: png.toString('base64'), encoding: 'base64' },
+          },
+        },
+        {
+          startedDateTime: '2024-08-17T10:00:01.000Z',
+          request: { url: 'https://cdn.e.com/nobody.jpg', headers: [] },
+          response: { status: 200, headers: [], content: { mimeType: 'image/jpeg', size: 4000 } },
+        },
+      ],
+    },
+  };
+
+  const { items, bodies, bodyBytes } = parseHar(har);
+  assert.equal(items.length, 2);
+
+  const withBody = items.find((i) => i.url.includes('withbody'));
+  const without = items.find((i) => i.url.includes('nobody'));
+  assert.equal(withBody.harBody, true, 'flagged as saveable offline');
+  assert.equal(without.harBody, undefined, 'an export without content still imports');
+
+  assert.equal(bodies.size, 1);
+  assert.deepEqual([...bodies.get(withBody.normalizedUrl).bytes], [...png]);
+  assert.equal(bodies.get(withBody.normalizedUrl).mimeType, 'image/png');
+  assert.equal(bodyBytes, png.length);
+});
+
+test('parseHar can skip bodies, and refuses one that is too large', () => {
+  const har = {
+    log: {
+      entries: [{
+        startedDateTime: '2024-08-17T10:00:00.000Z',
+        request: { url: 'https://cdn.e.com/a.png', headers: [] },
+        response: {
+          status: 200, headers: [],
+          content: { mimeType: 'image/png', size: 9, text: Buffer.from('123456789').toString('base64'), encoding: 'base64' },
+        },
+      }],
+    },
+  };
+  assert.equal(parseHar(har, { withBodies: false }).bodies.size, 0, 'opt out entirely');
+  assert.equal(parseHar(har, { maxBodyBytes: 4 }).bodies.size, 0, 'one oversized file is left to the network');
+  assert.equal(parseHar(har, { maxTotalBodyBytes: 4 }).bodies.size, 0, 'the memory budget is respected');
+  assert.equal(parseHar(har).bodies.size, 1);
+  assert.ok(MAX_BODY_BYTES > 0);
 });
 
 test('parseHar honours the item cap', () => {

@@ -54,6 +54,7 @@ const el = {
   confirmedOnly: $('confirmed-only'),
   includeHistory: $('include-history'),
   upgradeAll: $('upgrade-all'),
+  explore: $('explore'),
   banner: $('banner'),
   body: $('body'),
   empty: $('empty'),
@@ -86,6 +87,15 @@ const state = {
   groups: [],
   notClustered: 0,
   sessionId: null,
+  crawling: false,
+  /** Files written locally in the current download, so progress does not lie. */
+  localSaved: 0,
+  /**
+   * normalizedUrl -> {bytes, mimeType} decoded from an imported HAR. Held in
+   * the panel, never in the store: a capture can carry hundreds of megabytes
+   * and chrome.storage.session has a quota. Lives as long as the panel does.
+   */
+  harBodies: new Map(),
   kinds: new Set(['image', 'video', 'audio', 'stream']),
   renderToken: 0,
 };
@@ -426,6 +436,8 @@ function showDetail(item) {
   row(dl, 'bytes', item.bytes ? formatBytes(item.bytes) : 'unknown');
   row(dl, 'status', item.status + (item.protectedReason ? ` — ${item.protectedReason}` : ''));
   row(dl, 'layer', (item.sources || []).join(' + ') || item.source || '—');
+  if (hasHarBody(item)) row(dl, 'source', 'imported HAR body — saved without the network');
+  else if (item.harBody) row(dl, 'source', 'HAR body was imported in another panel session — will re-fetch');
   if (item.frameOrigin) row(dl, 'frame', item.frameOrigin);
   row(dl, 'saves as', applyTemplate(el.template.value || DEFAULT_TEMPLATE, tokensFor(item, {
     pageUrl: state.pageUrl, pageTitle: state.pageTitle, index: 1, total: state.selected.size || 1,
@@ -670,21 +682,53 @@ async function downloadSynthetic(item, index, total) {
   return true;
 }
 
+/** True when the imported capture holds this item's bytes. */
+function hasHarBody(item) {
+  return state.harBodies.has(item.normalizedUrl);
+}
+
+/** Write a file out of an imported HAR without touching the network. */
+function saveFromHar(item, index, total) {
+  const body = state.harBodies.get(item.normalizedUrl);
+  if (!body) return false;
+  const type = body.mimeType || item.mimeType || 'application/octet-stream';
+  const blob = new Blob([body.bytes], { type });
+  saveBlob(blob, applyTemplate(el.template.value || DEFAULT_TEMPLATE, tokensFor(
+    { ...item, mimeType: type },
+    { pageUrl: state.pageUrl, pageTitle: state.pageTitle, index, total },
+  )));
+  return true;
+}
+
 async function downloadItems(items) {
   const downloadable = items.filter(isDownloadable);
   if (!downloadable.length) return;
+  state.localSaved = 0;
 
-  const synthetic = downloadable.filter((i) => i.url.startsWith('magpie-'));
-  const network = downloadable.filter((i) => !i.url.startsWith('magpie-'));
+  // Anything already in hand — a canvas capture, or bytes from an imported
+  // HAR — is written here; only what genuinely has to be fetched goes to the
+  // background queue.
+  const local = downloadable.filter((i) => i.url.startsWith('magpie-') || hasHarBody(i));
+  const network = downloadable.filter((i) => !local.includes(i));
 
   let index = 0;
-  for (const item of synthetic) {
+  let fromHar = 0;
+  let captured = 0;
+  for (const item of local) {
     index += 1;
-    await downloadSynthetic(item, index, downloadable.length);
+    if (hasHarBody(item)) {
+      if (saveFromHar(item, index, downloadable.length)) fromHar += 1;
+    } else if (await downloadSynthetic(item, index, downloadable.length)) {
+      captured += 1;
+    }
   }
 
+  state.localSaved = fromHar + captured;
   if (!network.length) {
-    setProgressText(`captured ${synthetic.length} item(s) from the page`);
+    const parts = [];
+    if (fromHar) parts.push(`${fromHar} saved from the HAR, no network needed`);
+    if (captured) parts.push(`${captured} captured from the page`);
+    setProgressText(parts.join(' · ') || 'nothing to save');
     return;
   }
 
@@ -698,7 +742,7 @@ async function downloadItems(items) {
   if (response.ok) {
     state.sessionId = response.sessionId;
     el.progress.hidden = false;
-    setProgressText(`queued ${response.total}${response.skipped ? `, skipped ${response.skipped}` : ''}`);
+    setProgressText(`${localPrefix()}queued ${response.total}${response.skipped ? `, skipped ${response.skipped}` : ''}`);
   } else {
     setProgressText(`could not start: ${response.reason || 'unknown error'}`);
     el.progress.hidden = false;
@@ -707,6 +751,14 @@ async function downloadItems(items) {
 
 function setProgressText(text) {
   el.progressText.textContent = text;
+}
+
+/**
+ * Files saved without the network are not part of the background queue, so
+ * every progress line has to carry them or it under-reports what happened.
+ */
+function localPrefix() {
+  return state.localSaved ? `${state.localSaved} saved locally · ` : '';
 }
 
 /* ------------------------------------------------------------------ *
@@ -719,14 +771,18 @@ async function importHar(file) {
   el.progress.hidden = false;
   try {
     const text = await file.text();
-    const { items, skipped, error } = parseHar(text);
+    const { items, bodies, skipped, bodyBytes, error } = parseHar(text);
     if (error) {
       setProgressText(`HAR import failed: ${error}`);
       return;
     }
+    for (const [key, body] of bodies) state.harBodies.set(key, body);
     const response = await send({ type: MSG.IMPORT_HAR, items });
+    const offline = bodies.size
+      ? `, ${bodies.size} with bodies (${formatBytes(bodyBytes)}) saveable offline`
+      : ', no response bodies in this capture — they will be re-fetched';
     setProgressText(
-      `HAR: merged ${response.added || 0} new, ${response.updated || 0} updated, ${skipped} skipped`,
+      `HAR: merged ${response.added || 0} new, ${response.updated || 0} updated, ${skipped} skipped${offline}`,
     );
     scheduleRefresh();
   } catch (err) {
@@ -831,6 +887,30 @@ el.template.addEventListener('change', () => {
   if (state.expandedId) showDetail(findItem(state.expandedId));
 });
 
+function renderCrawlStatus(status) {
+  state.crawling = Boolean(status && status.running);
+  el.explore.textContent = state.crawling ? 'stop exploring' : 'explore';
+  el.explore.setAttribute('aria-pressed', String(state.crawling));
+  if (!status) return;
+  el.progress.hidden = false;
+  const where = status.currentUrl ? ` · ${status.currentUrl.replace(/^https?:\/\//, '').slice(0, 40)}` : '';
+  setProgressText(
+    state.crawling
+      ? `exploring: page ${status.pages + 1}/${status.limit}, ${status.queued} queued, ${status.clicks} clicks${where}`
+      : `exploring finished: ${status.pages} page(s), ${status.clicks} clicks${status.note ? ` — ${status.note}` : ''}`,
+  );
+}
+
+el.explore.addEventListener('click', async () => {
+  const response = await send({ type: state.crawling ? 'explore-stop' : 'explore-start' });
+  if (!response.ok) {
+    el.progress.hidden = false;
+    setProgressText(`could not start exploring: ${response.reason || 'unknown'}`);
+    return;
+  }
+  renderCrawlStatus(response.status);
+});
+
 el.clear.addEventListener('click', clearSelection);
 el.download.addEventListener('click', () => downloadItems(selectedItems()));
 el.stop.addEventListener('click', () => send({ type: MSG.STOP_DOWNLOADS, sessionId: state.sessionId }));
@@ -884,6 +964,10 @@ document.addEventListener('keydown', (event) => {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || typeof message.type !== 'string') return;
+  if (message.type === 'explore-progress') {
+    if (message.tabId === state.tabId) renderCrawlStatus(message.status);
+    return;
+  }
   if (message.type === MSG.STATE_UPDATE) {
     if (message.tabId === state.tabId) scheduleRefresh();
   } else if (message.type === MSG.DOWNLOAD_PROGRESS) {
@@ -893,7 +977,7 @@ chrome.runtime.onMessage.addListener((message) => {
     const pct = p.total ? Math.round(((p.done + p.failed) / p.total) * 100) : 0;
     el.progressFill.style.width = `${pct}%`;
     setProgressText(
-      `${p.done}/${p.total} saved${p.failed ? `, ${p.failed} failed` : ''}` +
+      `${localPrefix()}${p.done}/${p.total} fetched${p.failed ? `, ${p.failed} failed` : ''}` +
       `${p.stopped ? ' (stopped)' : p.finished ? ' — done' : ''}`,
     );
     if (p.finished && p.sidecar) {
@@ -904,7 +988,7 @@ chrome.runtime.onMessage.addListener((message) => {
     }
     if (p.errors && p.errors.length && p.finished) {
       const first = p.errors[0];
-      setProgressText(`${p.done}/${p.total} saved, ${p.failed} failed — e.g. ${first.error}`);
+      setProgressText(`${localPrefix()}${p.done}/${p.total} fetched, ${p.failed} failed — e.g. ${first.error}`);
     }
   }
 });
@@ -926,6 +1010,9 @@ chrome.tabs.onActivated.addListener(async () => {
   state.tabId = await resolveTabId();
   el.template.value = DEFAULT_TEMPLATE;
   await refresh({ consumeSeed: true });
+  // A crawl outlives the panel, so pick up one that is already running.
+  const crawl = await send({ type: 'explore-status' });
+  if (crawl.ok && crawl.status) renderCrawlStatus(crawl.status);
   // A seed arriving from the context menu should be visible immediately.
   if (state.seedId) {
     const tile = document.getElementById(`item-${state.seedId}`);
