@@ -1,0 +1,542 @@
+/*
+ * Magpie panel.
+ *
+ * Near-monochrome paper/ink. One accent, used only for selection state.
+ * Metadata is monospace, labels are sans. Hairline rules, no shadows, no
+ * rounded blobs, no gradients. Every colour is a custom property so dark
+ * mode is a single block of overrides.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --paper: #fbfbfa;
+  --paper-2: #f2f2f0;
+  --paper-3: #e9e9e6;
+  --ink: #141413;
+  --ink-2: #55554f;
+  --ink-3: #8a8a82;
+  --rule: #dcdcd6;
+  --rule-strong: #bcbcb4;
+  --accent: #e8552d;
+  --accent-ink: #ffffff;
+  --accent-wash: #fdeee9;
+  --warn: #8a5a00;
+  --warn-wash: #fff6e0;
+
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --gap: 8px;
+  --pad: 12px;
+  --hair: 1px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #16161a;
+    --paper-2: #1d1d22;
+    --paper-3: #26262c;
+    --ink: #ececeb;
+    --ink-2: #b0b0ab;
+    --ink-3: #77776f;
+    --rule: #2e2e35;
+    --rule-strong: #43434c;
+    --accent: #ff7a52;
+    --accent-ink: #16161a;
+    --accent-wash: #34211b;
+    --warn: #e5b45a;
+    --warn-wash: #2c2415;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every focusable thing keeps a visible ring. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: transparent;
+  border: var(--hair) solid var(--rule-strong);
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+button:hover:not(:disabled) { background: var(--paper-3); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+input[type="text"], input[type="search"], input[type="number"], select {
+  background: var(--paper-2);
+  border: var(--hair) solid var(--rule);
+  padding: 3px 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.mono { font-family: var(--mono); }
+.dim { color: var(--ink-3); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- *
+ * Header
+ * ---------------------------------------------------------------- */
+
+.header {
+  border-bottom: var(--hair) solid var(--rule);
+  padding: var(--pad);
+  display: grid;
+  gap: 6px;
+  background: var(--paper);
+}
+
+.header-top {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap);
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.host {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.totals {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.header-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.header-controls input[type="search"] { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------- *
+ * Filters
+ * ---------------------------------------------------------------- */
+
+.filters {
+  border-bottom: var(--hair) solid var(--rule);
+  padding: 6px var(--pad);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  font-size: 11px;
+  background: var(--paper-2);
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 7px;
+  border: var(--hair) solid var(--rule-strong);
+  color: var(--ink-2);
+  background: transparent;
+}
+.chip[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.filter-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-2);
+}
+.filter-field input[type="number"] { width: 62px; }
+
+/* ---------------------------------------------------------------- *
+ * Banners
+ * ---------------------------------------------------------------- */
+
+.banner {
+  padding: 6px var(--pad);
+  border-bottom: var(--hair) solid var(--rule);
+  font-size: 11.5px;
+  background: var(--warn-wash);
+  color: var(--warn);
+  display: flex;
+  gap: var(--gap);
+  align-items: baseline;
+}
+.banner[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- *
+ * Body / groups
+ * ---------------------------------------------------------------- */
+
+.body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.empty {
+  padding: 32px var(--pad);
+  color: var(--ink-3);
+  text-align: center;
+  font-size: 12px;
+}
+.empty kbd {
+  font-family: var(--mono);
+  border: var(--hair) solid var(--rule-strong);
+  padding: 0 4px;
+}
+
+mg-group { display: block; border-bottom: var(--hair) solid var(--rule); }
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  padding: 7px var(--pad);
+  cursor: pointer;
+  background: var(--paper);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: var(--hair) solid transparent;
+}
+mg-group[open] .group-head { border-bottom-color: var(--rule); }
+.group-head:hover { background: var(--paper-2); }
+
+.group-caret {
+  font-family: var(--mono);
+  color: var(--ink-3);
+  width: 1ch;
+}
+
+.group-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.group-label b { color: var(--ink); font-weight: 600; }
+
+.group-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 2px;
+  padding: 2px var(--pad) var(--pad);
+}
+mg-group:not([open]) .grid { display: none; }
+
+/* ---------------------------------------------------------------- *
+ * Items
+ * ---------------------------------------------------------------- */
+
+mg-item {
+  display: block;
+  position: relative;
+  border: var(--hair) solid var(--rule);
+  background: var(--paper-2);
+  cursor: pointer;
+}
+mg-item[selected] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: var(--accent-wash);
+}
+mg-item[data-status="protected"],
+mg-item[data-status="unavailable"] { opacity: 0.55; }
+
+.thumb-box {
+  width: 100%;
+  aspect-ratio: 1 / 1;           /* reserved: no layout shift as items stream in */
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--paper-3);
+}
+.thumb-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.thumb-glyph {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  text-align: center;
+  padding: 2px;
+  overflow: hidden;
+}
+
+.item-meta {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1.35;
+  color: var(--ink-3);
+  padding: 2px 3px;
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.badge {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 0 3px;
+  background: var(--ink);
+  color: var(--paper);
+  letter-spacing: 0.04em;
+}
+.badge.protected { background: var(--warn); color: var(--warn-wash); }
+.badge.score { left: auto; right: 2px; background: var(--accent); color: var(--accent-ink); }
+
+/* ---------------------------------------------------------------- *
+ * Detail drawer
+ * ---------------------------------------------------------------- */
+
+.detail {
+  border-top: var(--hair) solid var(--rule);
+  background: var(--paper-2);
+  padding: var(--pad);
+  font-family: var(--mono);
+  font-size: 11px;
+  display: grid;
+  gap: 6px;
+  /* Grid and flex children default to min-width:auto, so one long value (a
+     "saves as" path, a signed URL) widens the whole drawer past the panel and
+     nothing below it gets the chance to wrap. */
+  min-width: 0;
+}
+.detail[hidden] { display: none; }
+.detail > * { min-width: 0; }
+
+.detail dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 1px 10px;
+  min-width: 0;
+}
+.detail dt { color: var(--ink-3); }
+.detail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.url-compare {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 1px 10px;
+  border-left: 2px solid var(--rule-strong);
+  padding-left: 8px;
+  min-width: 0;
+}
+.url-compare dd { min-width: 0; overflow-wrap: anywhere; }
+.url-compare .upgraded { color: var(--accent); }
+
+/* ---------------------------------------------------------------- *
+ * Stream drawer
+ * ---------------------------------------------------------------- */
+
+/*
+ * A table is the wrong element at 400px: five columns of stream metadata can
+ * only be read by scrolling sideways. The rows are re-laid out as stacked
+ * blocks — resolution as the line header, everything else as label/value rows
+ * beneath it — so the list fits the panel at any width.
+ *
+ * Labels come from each cell's own `data-label`, and layout keys off
+ * `data-field`, so reordering VARIANT_COLUMNS in panel.js reorders the markup
+ * without touching this file.
+ */
+.variants {
+  display: block;
+  width: 100%;
+  font-size: 11px;
+  min-width: 0;
+}
+.variants tbody { display: block; }
+
+/* The header row's labels are inlined per value below. */
+.variants tr:first-child { display: none; }
+
+.variants tr {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 1px 8px;
+  padding: 5px 0;
+  border-bottom: var(--hair) solid var(--rule);
+  min-width: 0;
+}
+
+.variants td {
+  padding: 0;
+  border: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Line header: the radio, then the resolution. */
+.variants td[data-field="select"] { grid-column: 1; grid-row: 1; }
+.variants td[data-field="resolution"] {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Every labelled cell stacks under the resolution as label / value. */
+.variants td[data-label] {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: 5.5em minmax(0, 1fr);
+  gap: 0 8px;
+  color: var(--ink-2);
+}
+.variants td[data-label]::before {
+  content: attr(data-label);
+  color: var(--ink-3);
+}
+
+/* Wide content elsewhere in the drawer still gets its own scroller. */
+.scroll-x { overflow-x: auto; min-width: 0; }
+
+pre.command {
+  margin: 0;
+  padding: 6px;
+  background: var(--paper-3);
+  border: var(--hair) solid var(--rule);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* ---------------------------------------------------------------- *
+ * Footer
+ * ---------------------------------------------------------------- */
+
+.footer {
+  border-top: var(--hair) solid var(--rule);
+  padding: var(--pad);
+  display: grid;
+  gap: 6px;
+  background: var(--paper);
+}
+
+.footer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+}
+
+.selection {
+  flex: 1 1 auto;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.selection b { color: var(--accent); }
+
+.primary {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+  padding: 5px 12px;
+  font-weight: 600;
+}
+.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+.template-row { display: flex; align-items: center; gap: 6px; }
+.template-row input { flex: 1 1 auto; }
+.template-row label { font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+
+.progress {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  display: flex;
+  gap: var(--gap);
+  align-items: center;
+}
+.progress[hidden] { display: none; }
+.progress-bar {
+  flex: 1 1 auto;
+  height: 3px;
+  background: var(--paper-3);
+  border: var(--hair) solid var(--rule);
+}
+.progress-bar span { display: block; height: 100%; background: var(--accent); }
+
+/* ---------------------------------------------------------------- *
+ * HAR drop zone
+ * ---------------------------------------------------------------- */
+
+.dropzone {
+  border: var(--hair) dashed var(--rule-strong);
+  padding: 5px var(--pad);
+  text-align: center;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+}
+.dropzone.over {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-wash);
+}

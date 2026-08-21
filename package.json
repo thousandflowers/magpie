@@ -1,0 +1,40 @@
+{
+  "name": "magpie",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension (MV3) that finds every image, video and audio file a page loads or references, groups them by similarity, and downloads them in bulk. No build step, no runtime dependencies.",
+  "keywords": [
+    "chrome-extension",
+    "manifest-v3",
+    "media",
+    "downloader",
+    "image-downloader",
+    "bulk-download",
+    "similarity",
+    "clustering",
+    "hls",
+    "dash",
+    "har"
+  ],
+  "license": "MIT",
+  "author": "Eugenio Zamengo Pontrelli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thousandflowers/magpie.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thousandflowers/magpie/issues"
+  },
+  "homepage": "https://github.com/thousandflowers/magpie#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\" && node test/browser/service-worker.smoke.mjs",
+    "test:unit": "node --test \"test/*.test.mjs\"",
+    "test:smoke": "node test/browser/service-worker.smoke.mjs",
+    "test:dash": "node test/browser/dash-protection.mjs",
+    "screenshots": "node test/browser/panel-screenshots.mjs"
+  }
+}

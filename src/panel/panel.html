@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Magpie</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-top">
+      <span class="brand">Magpie</span>
+      <span class="host truncate" id="host">no page</span>
+      <span class="totals" id="totals">0 items</span>
+    </div>
+    <div class="header-controls">
+      <input type="search" id="search" placeholder="filter by URL…" aria-label="Filter items by URL substring">
+      <label class="filter-field" for="threshold">
+        <span>similarity</span>
+        <select id="threshold" aria-label="Similarity threshold">
+          <option value="loose">loose</option>
+          <option value="balanced" selected>balanced</option>
+          <option value="strict">strict</option>
+        </select>
+      </label>
+      <button type="button" id="rescan" title="Rescan the page now">rescan</button>
+    </div>
+  </header>
+
+  <div class="filters" role="group" aria-label="Filters">
+    <button type="button" class="chip" data-kind="image" aria-pressed="true">image</button>
+    <button type="button" class="chip" data-kind="video" aria-pressed="true">video</button>
+    <button type="button" class="chip" data-kind="audio" aria-pressed="true">audio</button>
+    <button type="button" class="chip" data-kind="stream" aria-pressed="true">stream</button>
+    <label class="filter-field">min px
+      <input type="number" id="min-dim" min="0" step="16" value="0" aria-label="Minimum width or height in pixels">
+    </label>
+    <label class="filter-field">min KB
+      <input type="number" id="min-kb" min="0" step="1" value="0" aria-label="Hide items under this many kilobytes">
+    </label>
+    <label class="filter-field">
+      <input type="checkbox" id="confirmed-only">
+      confirmed only
+    </label>
+    <label class="filter-field">
+      <input type="checkbox" id="include-history">
+      session history
+    </label>
+    <button type="button" id="upgrade-all" title="Probe every item for a higher-resolution original">find originals</button>
+  </div>
+
+  <div class="banner" id="banner" hidden role="status"></div>
+
+  <main class="body" id="body">
+    <div class="empty" id="empty">
+      Nothing found yet. Scroll the page, or press <kbd>rescan</kbd>.
+    </div>
+  </main>
+
+  <section class="detail" id="detail" hidden aria-label="Item detail"></section>
+
+  <footer class="footer">
+    <div class="dropzone" id="dropzone">
+      drop a .har file here to merge a DevTools capture
+      <input type="file" id="har-input" accept=".har,application/json" hidden>
+    </div>
+    <div class="progress" id="progress" hidden>
+      <span id="progress-text">idle</span>
+      <span class="progress-bar"><span id="progress-fill" style="width:0%"></span></span>
+      <button type="button" id="stop">stop</button>
+    </div>
+    <div class="template-row">
+      <label for="template">name</label>
+      <input type="text" id="template" spellcheck="false"
+             aria-label="Filename template"
+             title="Tokens: {host} {title} {date} {index} {basename} {ext} {width} {height} {group}">
+    </div>
+    <div class="footer-row">
+      <span class="selection" id="selection"><b>0</b> selected · 0 B</span>
+      <button type="button" id="clear">clear</button>
+      <button type="button" class="primary" id="download" disabled>download</button>
+    </div>
+  </footer>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

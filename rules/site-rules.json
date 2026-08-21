@@ -1,0 +1,69 @@
+{
+  "$schema": "https://magpie.local/site-rules.schema.json",
+  "version": 1,
+  "documentation": "Each rule rewrites a thumbnail URL into its full-resolution original. Rules are tried before the generic rules in src/core/upgrade-rules.js, in array order, and every produced URL is HEAD-verified before it is offered unless `verify` is false. Fields: match (hostname or suffix, `*` for any), path (optional regex the pathname must satisfy), find (regex applied to the whole URL), replace (replacement, $1..$9 supported), verify (default true), note (shown in the panel).",
+  "rules": [
+    {
+      "match": "wikimedia.org",
+      "path": "/thumb/",
+      "find": "^(https?://[^/]+/wikipedia/[^/]+)/thumb/(.+)/[^/]+$",
+      "replace": "$1/$2",
+      "note": "Wikimedia: drop /thumb/ and the rendition segment"
+    },
+    {
+      "match": "wikipedia.org",
+      "path": "/thumb/",
+      "find": "^(https?://[^/]+/wikipedia/[^/]+)/thumb/(.+)/[^/]+$",
+      "replace": "$1/$2",
+      "note": "Wikipedia: drop /thumb/ and the rendition segment"
+    },
+    {
+      "match": "redd.it",
+      "find": "^https?://preview\\.redd\\.it/([^?]+).*$",
+      "replace": "https://i.redd.it/$1",
+      "note": "Reddit: preview.redd.it renditions have an i.redd.it original"
+    },
+    {
+      "match": "wp.com",
+      "find": "\\?.*$",
+      "replace": "",
+      "note": "Jetpack Photon: drop every resize parameter"
+    },
+    {
+      "match": "squarespace-cdn.com",
+      "find": "\\?format=\\d+w",
+      "replace": "?format=original",
+      "note": "Squarespace: ask for the original rendition"
+    },
+    {
+      "match": "shopify.com",
+      "find": "_(?:pico|icon|thumb|small|compact|medium|large|grande|\\d{2,4}x\\d{0,4})(?=\\.[a-z]{3,4}(?:\\?|$))",
+      "replace": "",
+      "note": "Shopify: strip the named size suffix"
+    },
+    {
+      "match": "media-amazon.com",
+      "find": "\\._[A-Z0-9_,]+_(?=\\.[a-z]{3,4}$)",
+      "replace": "",
+      "note": "Amazon: strip the ._SX300_ style transform block"
+    },
+    {
+      "match": "staticflickr.com",
+      "find": "_(?:[smtqnwzcb]|150|240|320|500|640|800)(?=\\.[a-z]{3,4}(?:\\?|$))",
+      "replace": "_b",
+      "note": "Flickr: request the _b (1024px) rendition"
+    },
+    {
+      "match": "githubusercontent.com",
+      "find": "([?&])s=\\d+",
+      "replace": "$1s=460",
+      "note": "GitHub avatars: request the largest served size"
+    },
+    {
+      "match": "tumblr.com",
+      "find": "_(?:75sq|100|250|400|500|540|640)(?=\\.[a-z]{3,4}$)",
+      "replace": "_1280",
+      "note": "Tumblr: request the 1280px rendition"
+    }
+  ]
+}

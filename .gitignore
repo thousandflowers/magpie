@@ -1,0 +1,10 @@
+# Screenshot artifacts — regenerate with `npm run screenshots`.
+# docs/panel.png is the one committed image (the README hero).
+test/screenshots/
+
+node_modules/
+npm-debug.log*
+package-lock.json
+
+.DS_Store
+*.swp

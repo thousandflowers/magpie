@@ -1,0 +1,37 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Chrome for Testing
+        id: chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: Export CHROME_PATH
+        run: |
+          echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
+          "${{ steps.chrome.outputs.chrome-path }}" --version
+
+      # The extension has no dependencies, so there is nothing to install.
+      # CI is set by GitHub Actions, which makes the service-worker smoke test
+      # refuse to skip: if Chrome is missing, or the worker fails to register,
+      # or it registers with a console error, this step exits non-zero and the
+      # build fails. That is the point of it.
+      - name: Unit tests and service-worker smoke test
+        run: npm test
