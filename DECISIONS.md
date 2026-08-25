@@ -11,7 +11,7 @@ Deviations from the spec are marked **[deviation]** and justified.
   the sites Magpie most needs to work on. Both content scripts therefore carry a
   compact media-URL prefilter of their own and send raw evidence; `src/core`
   remains the single authority for classification, normalisation and filtering.
-  The alternative — `web_accessible_resources` for the core modules — would also
+  The alternative - `web_accessible_resources` for the core modules - would also
   have exposed extension internals to every page. **[deviation from §3's "core is
   importable everywhere" implication]**
 - **`history.pushState` is wrapped in the MAIN world, not the isolated one.**
@@ -45,7 +45,7 @@ Deviations from the spec are marked **[deviation]** and justified.
   a bonus, a hero image sharing a host and directory with a 40-item grid still
   links into it at the balanced threshold (0.640 > 0.62), which fails acceptance
   criterion 6. Magpie therefore also subtracts 0.15 when exactly one of the two
-  is in a repeated structure — a standalone hero genuinely is not part of the
+  is in a repeated structure - a standalone hero genuinely is not part of the
   grid, and that asymmetry is real signal, not a fudge. Hero-vs-grid then scores
   0.602 and separates; grid-vs-grid is untouched at 1.0.
 - **`cluster()` is union-find over the thresholded score matrix.** Linking every
@@ -53,7 +53,7 @@ Deviations from the spec are marked **[deviation]** and justified.
   agglomerative clustering at that height, without building a dendrogram.
 - **Clustering is capped at 1200 items per view**, chunked at 12 ms with
   `requestAnimationFrame` between slices. The remainder is shown as an explicit
-  "not clustered — over the limit" group and named in the banner: a silent
+  "not clustered - over the limit" group and named in the banner: a silent
   truncation would read as "we covered everything".
 - **`describeGroup` needs a strict majority** for a dominant dimension. A 50/50
   split of thumbnails and originals was being labelled `150x150`, which is
@@ -111,16 +111,16 @@ article and Apple's public HLS test stream.
 
 | # | Criterion | Result |
 |---|---|---|
-| 1 | `node --test` passes with meaningful assertions | **PASS** — 75 tests, 0 failures, across `similarity`, `url-normalize`, `upgrade-rules` and `pipeline` (filenames, HLS/DASH, HAR, classification). All five required similarity fixtures are covered. |
-| 2 | Unpacked load produces no manifest warnings and no service-worker errors | **PASS** — after one real fix: `'imageset'` is not a valid `webRequest` resource type and threw at worker startup, which stopped the worker registering. Now clean; no console errors in any run. |
-| 3 | Wikipedia gallery: full-size images found, `/thumb/` upgrade fires, images cluster | **PASS** — live `en.wikipedia.org/wiki/Eurasian_magpie`: 69 items, 35 `/thumb/` URLs; `250px-Eurasian_magpie_2024_03_03_02.jpg` upgraded to the 12,070,770-byte original; commons images clustered into one 16-item group. |
-| 4 | WordPress: `-300x200` thumbs upgrade to originals, no double listing | **PASS** — fixture gallery: 12/12 thumbnails `HEAD`-verified to their originals (8 KB → 335 KB), and the merged index lists each URL once. |
-| 5 | Infinite scroll: items appear as you scroll, no duplicates, no jumping | **PASS (partial)** — a `MutationObserver` rescan indexes dynamically appended media, and re-appending 20 images with fresh `?utm_source=…&t=…` query strings left the index at 122, unchanged. "No jumping" rests on reserved aspect-ratio boxes and lazy tile reveal; that is a visual property and was not measured. |
-| 6 | Hero image plus a 40-item grid: the hero gets its own cluster | **PASS** — asserted in `test/similarity.test.mjs`; hero alone, grid intact at 40. Required the symmetric repeated-group term above. |
-| 7 | Public HLS stream: variants listed with bitrates, copied `yt-dlp` command runs | **PASS** — Apple `bipbop_4x3_variant.m3u8` parsed into 5 variants with bitrates and codecs; the generated command ran in a terminal, resolved formats and downloaded 483 KB / 62 of 180 fragments before being stopped on purpose. |
-| 8 | DRM player: item marked `protected`, every download control disabled | **PASS** — after the page requested a key system, the video went `protected` ("Encrypted Media Extensions: com.widevine.alpha"), the tile showed the `DRM` badge, the detail drawer's download button was `[DISABLED]`, and a download of 2 items queued 1 and skipped 1. |
-| 9 | 100+ items download with correct names and no collisions | **PASS** — 122 selected, 122 queued, 122 complete, 0 interrupted, 122 unique filenames, 0 zero-byte files; two files sharing the basename `clash.png` landed as `121-clash.png` and `122-clash.png`. |
-| 10 | Killing the service worker and reopening the panel restores the index | **PASS** — worker terminated via CDP; the reopened panel showed all 35 items in 6 groups, rehydrated from `chrome.storage.session`, with the DRM banner intact. |
+| 1 | `node --test` passes with meaningful assertions | **PASS** - 75 tests, 0 failures, across `similarity`, `url-normalize`, `upgrade-rules` and `pipeline` (filenames, HLS/DASH, HAR, classification). All five required similarity fixtures are covered. |
+| 2 | Unpacked load produces no manifest warnings and no service-worker errors | **PASS** - after one real fix: `'imageset'` is not a valid `webRequest` resource type and threw at worker startup, which stopped the worker registering. Now clean; no console errors in any run. |
+| 3 | Wikipedia gallery: full-size images found, `/thumb/` upgrade fires, images cluster | **PASS** - live `en.wikipedia.org/wiki/Eurasian_magpie`: 69 items, 35 `/thumb/` URLs; `250px-Eurasian_magpie_2024_03_03_02.jpg` upgraded to the 12,070,770-byte original; commons images clustered into one 16-item group. |
+| 4 | WordPress: `-300x200` thumbs upgrade to originals, no double listing | **PASS** - fixture gallery: 12/12 thumbnails `HEAD`-verified to their originals (8 KB → 335 KB), and the merged index lists each URL once. |
+| 5 | Infinite scroll: items appear as you scroll, no duplicates, no jumping | **PASS (partial)** - a `MutationObserver` rescan indexes dynamically appended media, and re-appending 20 images with fresh `?utm_source=…&t=…` query strings left the index at 122, unchanged. "No jumping" rests on reserved aspect-ratio boxes and lazy tile reveal; that is a visual property and was not measured. |
+| 6 | Hero image plus a 40-item grid: the hero gets its own cluster | **PASS** - asserted in `test/similarity.test.mjs`; hero alone, grid intact at 40. Required the symmetric repeated-group term above. |
+| 7 | Public HLS stream: variants listed with bitrates, copied `yt-dlp` command runs | **PASS** - Apple `bipbop_4x3_variant.m3u8` parsed into 5 variants with bitrates and codecs; the generated command ran in a terminal, resolved formats and downloaded 483 KB / 62 of 180 fragments before being stopped on purpose. |
+| 8 | DRM player: item marked `protected`, every download control disabled | **PASS** - after the page requested a key system, the video went `protected` ("Encrypted Media Extensions: com.widevine.alpha"), the tile showed the `DRM` badge, the detail drawer's download button was `[DISABLED]`, and a download of 2 items queued 1 and skipped 1. |
+| 9 | 100+ items download with correct names and no collisions | **PASS** - 122 selected, 122 queued, 122 complete, 0 interrupted, 122 unique filenames, 0 zero-byte files; two files sharing the basename `clash.png` landed as `121-clash.png` and `122-clash.png`. |
+| 10 | Killing the service worker and reopening the panel restores the index | **PASS** - worker terminated via CDP; the reopened panel showed all 35 items in 6 groups, rehydrated from `chrome.storage.session`, with the DRM banner intact. |
 
 ## Bugs this verification pass found and fixed
 
@@ -154,7 +154,7 @@ article and Apple's public HLS test stream.
 
 Four bounded tasks. Nothing outside them was touched.
 
-## 1. DASH `ContentProtection` — PASS
+## 1. DASH `ContentProtection` - PASS
 
 Previously the DASH protected branch had never executed. It now has two
 hand-written manifests in `test/fixtures/dash.mjs`: `PROTECTED_MPD` carries a
@@ -179,24 +179,24 @@ does not pretend to be.
 - `test/browser/dash-protection.mjs` (18 assertions, `npm run test:dash`):
   the manifests are fed to the **actual panel** in Chrome rather than to a
   restatement of its logic, and the controls are read back out of the DOM.
-  Protected: item marked `protected`, `DRM` badge, "DRM protected — not
+  Protected: item marked `protected`, `DRM` badge, "DRM protected - not
   downloadable", key system named, **none of the three stream actions
   offered**, download control disabled, zero shell commands generated, zero
   variants listed. Clean: 3 variants with resolutions, all three actions
   present and enabled, both commands generated. No console errors.
 
-## 2. Repeated-group penalty — FAILED as suspected, then fixed
+## 2. Repeated-group penalty - FAILED as suspected, then fixed
 
 The suspicion was correct. A 3-slide hero carousel above a 40-item product
 grid (`carouselHeroPlusGrid`, same host, same directory, same file type) puts
 the hero **inside** a repeated structure, so the boolean "is in some repeated
-group" test cannot separate them — it awards no penalty at all.
+group" test cannot separate them - it awards no penalty at all.
 
 The term now keys on repeated-group **identity**: the DOM scanner reports
 `repeatDepth`, the index in the structural path of the node whose siblings
 repeat, and the engine derives a group key from that node plus its ancestors.
 Two cells of one grid share a key; a carousel slide and a grid cell do not.
-When the two keys differ — or one element is repeated and the other is not —
+When the two keys differ - or one element is repeated and the other is not -
 the structural term returns **0** rather than being nudged by −0.15: different
 templates mean the ancestry they share is page chrome (`body > main > …`), not
 evidence of belonging to the same set. Items with no `repeatDepth` (HAR
@@ -211,7 +211,7 @@ Threshold 0.62 (balanced). "old" is the boolean ±0.15 rule; "new" is identity:
 | B. carousel slide vs grid, 1440×600 vs 800×800 | 0.6497 **FAIL** | **0.5782 pass**, margin 0.042 |
 | C. carousel slide vs grid, 1200×800 vs 900×800 | 0.6839 **FAIL** | **0.6125 pass**, margin 0.008 |
 
-Controls: two carousel slides 1.0000, two grid cells 1.0000 — the change costs
+Controls: two carousel slides 1.0000, two grid cells 1.0000 - the change costs
 nothing within a group. The original fixture's margin roughly quadrupled, which
 is the evidence that the old rule was tuned to it rather than correct.
 
@@ -222,13 +222,13 @@ would score 0.6625 and merge. That is a real limit of the current weights, not
 something the repeated-group term can fix, and it is recorded rather than
 papered over.
 
-## 3. Dynamic-class detection by cardinality — PASS
+## 3. Dynamic-class detection by cardinality - PASS
 
 The DOM scan now counts every class in the document in one cheap pass (no
 computed styles) and attaches the counts for the classes on each candidate's
 own path. A class is treated as dynamic only when it is **both** high-entropy
 and on ≤ 2 elements. Entropy is Shannon entropy over the token's alphanumerics
-adjusted for mixed case, digits and vowel scarcity — a measure, not a shape
+adjusted for mixed case, digits and vowel scarcity - a measure, not a shape
 match. The old regex heuristic is retained and used per-token whenever the map
 has nothing to say about that class, which is what HAR-sourced and
 network-only items get.
@@ -236,15 +236,15 @@ network-only items get.
 Measured in a real browser on the fixture gallery: `grid-thumb` 12,
 `grid-item` 12, `icon` 5, `hero-image` 1, `photo-grid` 1, `gallery` 1. The
 frequent classes are kept on frequency alone; the rare ones are kept because
-their entropy is below threshold — which is the case the frequency rule on its
+their entropy is below threshold - which is the case the frequency rule on its
 own would have got wrong. `repeatDepth` came back 2 for grid thumbnails
 (`li.grid-item`), 1 for toolbar icons (`button.toolbar-button`), −1 for the
 hero. No console errors.
 
-**All existing similarity tests pass unchanged** — they supply no counts, so
+**All existing similarity tests pass unchanged** - they supply no counts, so
 they exercise the fallback. Total is now 98 tests, 0 failures.
 
-## 4. Service-worker smoke test — PASS
+## 4. Service-worker smoke test - PASS
 
 `test/browser/service-worker.smoke.mjs` (~40 lines on a shared harness) loads
 the unpacked extension in Chrome for Testing, waits for the service-worker
@@ -259,7 +259,7 @@ so this was checked rather than assumed.
 
 It skips with a notice (exit 0) when no Chromium is found, so `npm test` works
 on a machine without one. CI must set `CHROME_PATH` for the check to actually
-run — otherwise this whole class of bug is invisible again.
+run - otherwise this whole class of bug is invisible again.
 
 ## Bugs found during this pass
 
@@ -283,7 +283,7 @@ tests), `README.md` (test command only).
 
 ---
 
-# Third pass — structural evidence, and a duplicate that criterion 4 missed
+# Third pass - structural evidence, and a duplicate that criterion 4 missed
 
 ## The structural term now has three states
 
@@ -296,7 +296,7 @@ network-only and HAR-sourced item for evidence it could never have had.
 |---|---|---|
 | both paths present, same repeated group | `common / longer` (+0.15 when close) | measured |
 | both paths present, different repeated groups | `0` | known different templates |
-| either path missing | `NEUTRAL_STRUCTURE` = `0.5` | nothing known — same reasoning as `dimensionSimilarity` |
+| either path missing | `NEUTRAL_STRUCTURE` = `0.5` | nothing known - same reasoning as `dimensionSimilarity` |
 
 Only pairs missing structure moved; both hero separations are untouched, so the
 change does not erode the repeated-group work:
@@ -342,13 +342,13 @@ The DOM scan counts every class in the document in one cheap pass and attaches
 the counts for the classes on each candidate's own path. A class is dynamic only
 when it is **both** high-entropy and on ≤ 2 elements. Entropy is Shannon entropy
 over the token's alphanumerics adjusted for mixed case, digits and vowel
-scarcity — a measurement, not a shape match. The old regex survives as a
+scarcity - a measurement, not a shape match. The old regex survives as a
 per-token fallback wherever the map says nothing, which is what HAR-sourced and
 network-only items get, so every pre-existing similarity test passes unchanged.
 
 Measured in a real browser: `grid-thumb` 12, `grid-item` 12, `icon` 5,
 `hero-image` 1, `photo-grid` 1. The frequent classes are acquitted by frequency;
-the rare ones survive because their entropy is low — the exact case frequency
+the rare ones survive because their entropy is low - the exact case frequency
 alone would have got wrong.
 
 ## The 0.6625 weights limit
@@ -373,7 +373,7 @@ worse by clustering the pair at 0.6548, so "download all similar" would have
 saved everything twice.
 
 `collapseUpgradeDuplicates` now groups items by the URL that would actually be
-fetched — the verified upgrade target, or the item's own URL — and folds each
+fetched - the verified upgrade target, or the item's own URL - and folds each
 group down to one survivor, preferring the item that has DOM structure because
 it is the one on screen and it carries the grid context clustering needs.
 Grouping by effective URL catches both shapes of the bug: thumbnail-vs-original,
@@ -389,8 +389,8 @@ queues 12, saves 12 unique files, each named after the original.
 things about the images are synthetic and are stated in the file header and the
 README caption: the tiles are painted with flat SVG placeholders because the
 fixture hosts do not exist, and the viewport is grown to fit the panel's
-internal scroller. Everything else — layout, metadata, clustering, selection,
-dark mode — is the real panel.
+internal scroller. Everything else - layout, metadata, clustering, selection,
+dark mode - is the real panel.
 
 ## `node --test` was running the browser scripts
 
@@ -415,7 +415,7 @@ set, so the local sandbox stays on.
 MIT `LICENSE`; `.gitignore` covering `test/screenshots/`, `node_modules`,
 `.DS_Store`; `package.json` at version 0.1.0 with description, keywords,
 repository and license. `docs/panel.png` is the committed copy of screenshot 3
-used as the README hero — the screenshots directory itself is ignored, so a
+used as the README hero - the screenshots directory itself is ignored, so a
 fresh clone would otherwise render a broken image.
 
 **Known inconsistency, left alone:** `package.json` is 0.1.0 as instructed while
@@ -424,7 +424,7 @@ disagree; whichever is wrong should be changed before a first release.
 
 ---
 
-# Fourth pass — three small corrections
+# Fourth pass - three small corrections
 
 - **`manifest.json` version aligned to 0.1.0.** The two version numbers no
   longer disagree; the inconsistency flagged at the end of the third pass is
@@ -432,8 +432,8 @@ disagree; whichever is wrong should be changed before a first release.
 
 - **README hero swapped to the cluster shot** (400 x 805). The bulk shot is
   400 x 2873, a 1:7 aspect that renders as a wall in a README, so it is linked
-  rather than embedded. It still earns a mention — it is the clearest evidence
-  of the tool working at scale — just not as an inline image.
+  rather than embedded. It still earns a mention - it is the clearest evidence
+  of the tool working at scale - just not as an inline image.
 
 - **The variants table is no longer a table at 400px.** Five columns of stream
   metadata could only be read by scrolling sideways, which is the wrong
@@ -442,11 +442,11 @@ disagree; whichever is wrong should be changed before a first release.
   rows beneath. The markup is untouched, so the column labels now live in CSS
   keyed to cell position (`td:nth-child(3)::before` and friends) and the header
   row is hidden. That coupling was the cost of keeping the change CSS-only, and
-  it has since been removed — see below.
+  it has since been removed - see below.
 
 - **The detail drawer wraps instead of overflowing.** The cause was
-  `min-width: auto` on grid and flex children: one long value — a `saves as`
-  path, a signed URL — widened the whole drawer past the panel, so the action
+  `min-width: auto` on grid and flex children: one long value - a `saves as`
+  path, a signed URL - widened the whole drawer past the panel, so the action
   row had room and never wrapped. `min-width: 0` on the drawer, its children,
   the definition lists and the URL comparison lets values shrink and wrap, and
   the action row then wraps as it was always meant to.
@@ -458,14 +458,14 @@ horizontal overflow beside each shot. All six report **0px**.
 
 ---
 
-# Fifth pass — the label coupling is gone
+# Fifth pass - the label coupling is gone
 
 `VARIANT_COLUMNS` in `panel.js` is now the single definition of a stream
 variant's columns. The hidden header row and the cells are both generated from
 it, each cell carrying `data-field` (what it is) and, for the three that stack
 under the resolution, `data-label` (what to call it). The stylesheet keys off
-those attributes — `td[data-field="resolution"]` for the line header,
-`td[data-label]::before { content: attr(data-label) }` for the rest — so no rule
+those attributes - `td[data-field="resolution"]` for the line header,
+`td[data-label]::before { content: attr(data-label) }` for the rest - so no rule
 counts columns any more.
 
 Verified by reordering the array to `size, codec, bitrate` and reading the
@@ -481,19 +481,19 @@ same reorder would have rendered `size 6000 kbps`. Table overflow stayed at 0px,
 and the shipped order was restored afterwards.
 
 Screenshot 04 regenerated; it renders identically to the position-keyed version,
-which is the point — this was a maintainability fix, not a visual one. Shots 02
+which is the point - this was a maintainability fix, not a visual one. Shots 02
 and 03 came back byte-identical, so the committed README images needed no
 update.
 
 ---
 
-# Sixth pass — HAR import saves from the capture, not from the network
+# Sixth pass - HAR import saves from the capture, not from the network
 
 The module header claimed HAR import existed "because HAR entries keep response
 bodies the live page has already thrown away". It did not read those bodies:
 `parseHar` looked only at `content.mimeType` and `content.size`, and every
 download re-fetched the URL. That made the feature useless in exactly the case
-it was written for — an expired signed URL, a session behind a login, a file
+it was written for - an expired signed URL, a session behind a login, a file
 taken down.
 
 `decodeHarBody()` now reads `response.content.text`, honouring
@@ -534,7 +534,7 @@ carries the local count, and "saved" became "fetched" where it means fetched.
 
 ---
 
-# Seventh pass — the explorer
+# Seventh pass - the explorer
 
 Automatic exploration: scroll a page, click the controls that reveal more
 media, follow same-origin links, and keep the index across the whole walk.
@@ -544,14 +544,14 @@ media, follow same-origin links, and keep the index across the whole walk.
 Scrolling and following links are GET-shaped and reversible, so they are
 exhaustive. Clicking is not: on an app where the user is signed in, an
 indiscriminate clicker eventually hits "Delete", "Pay" or "Log out". So the two
-are governed differently, and **a click needs a positive reason** —
+are governed differently, and **a click needs a positive reason** -
 `src/core/explore-policy.js` refuses by default and only approves a control that
 either wraps media or reads as a media control.
 
 Refused outright, whatever the label says: form controls, anything inside a
 `<form>`, submit buttons, `download` attributes, `target="_blank"`, and any
 accessible text or class token matching the transactional/destructive list
-(English and Italian). A `<a href>` is never clicked — it is queued for
+(English and Italian). A `<a href>` is never clicked - it is queued for
 navigation instead, where `shouldFollow` applies the same word list to the path,
 because `/logout` is a GET on most sites.
 
@@ -570,7 +570,7 @@ indexes it is handed. One message per round, not per element.
 
 Crawl state lives in `chrome.storage.session` under `crawl:<tabId>`, so a worker
 restart mid-walk keeps the queue. While a crawl owns a tab the index is **not**
-reset on navigation — wiping it on each hop would throw away exactly what the
+reset on navigation - wiping it on each hop would throw away exactly what the
 walk went to collect.
 
 Bounded by construction: 40 pages, 60 clicks and 40 scroll steps per page, a
@@ -580,7 +580,7 @@ a stop that reaches both the queue and the page.
 ## Verified against a two-page fixture app
 
 Page 1 held two visible thumbnails, a "Mostra altre foto" button revealing four
-more, an "Ingrandisci" button opening a lightbox, a link to page 2 — and four
+more, an "Ingrandisci" button opening a lightbox, a link to page 2 - and four
 traps: `Elimina account`, `Paga ora`, a submit button inside a form labelled
 *"Mostra altre foto"* (media wording, dangerous shape), and an `Esci` link. Each
 trap recorded a click in `localStorage`.
@@ -598,6 +598,6 @@ Everything hidden behind a click or a second page was found; the form-shaped
 button with media wording was refused on shape before its label was even read.
 
 One bug found and fixed in the same pass: `pageFinished` incremented the page
-counter in memory and then called `stopCrawl`, which re-reads from storage — so
+counter in memory and then called `stopCrawl`, which re-reads from storage - so
 a finished crawl reported one page fewer than it had visited. The counters are
 now persisted before any branch that stops.

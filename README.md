@@ -6,7 +6,7 @@ them in bulk.
 
 ![The Magpie panel showing three clusters found on one page](docs/panel.png)
 
-*The panel at its real 400px width: one page, three clusters — a 12-image
+*The panel at its real 400px width: one page, three clusters - a 12-image
 gallery, a collapsed set of 6 UI icons, and a hero on its own. Tiles in these
 captures are flat placeholders (the fixture URLs point at hosts that do not
 exist); the layout, metadata, clustering and selection state are real.
@@ -17,8 +17,8 @@ everything a single-page app fetches) or watches the network (catches
 everything, including garbage, with no relationship to what is on screen).
 Magpie does both and joins them. The signature interaction is **similarity
 selection**: right-click one image and it selects every other item on the page
-that belongs to the same set — same DOM structure, same URL shape, same
-dimensions — and downloads them together.
+that belongs to the same set - same DOM structure, same URL shape, same
+dimensions - and downloads them together.
 
 The same mechanic at scale, as a full-length capture rather than an inline
 image because it is 400 x 2873: [122 assets recognised as one set, 40 selected,
@@ -29,7 +29,7 @@ a `chrome.webRequest` observer (listener mode only); a MAIN-world interceptor at
 `document_start` that mines `fetch`/XHR JSON payloads for media URLs an SPA has
 not rendered yet; a DOM scanner covering `srcset`, `picture`, lazy `data-*`
 attributes, CSS `background-image`, inline `<svg>`, `<canvas>` and gallery
-`<a href>` links; and HAR import for a DevTools capture — which, when the
+`<a href>` links; and HAR import for a DevTools capture - which, when the
 capture was exported *with content*, saves the files straight out of the archive
 without touching the network. An item seen by both the DOM and the network is
 `confirmed` and sorts first.
@@ -38,7 +38,7 @@ without touching the network. An item seen by both the DOM and the network is
 0.10·host`, cut at `loose 0.45 / balanced 0.62 / strict 0.80`, clustered with
 single linkage. The structure term has three states: a score, `0` when two items
 are known to sit in *different* repeated groups (a carousel is not the grid
-below it), and a neutral `0.5` when either item has no DOM at all — absence of
+below it), and a neutral `0.5` when either item has no DOM at all - absence of
 evidence must not be counted as evidence of difference.
 
 ---
@@ -64,7 +64,7 @@ npm run screenshots
 ```
 
 `package.json` declares no dependencies. The browser checks look for a Chromium
-(`CHROME_PATH` points at one) and skip with a notice if none is found — except
+(`CHROME_PATH` points at one) and skip with a notice if none is found - except
 under `CI`, where the smoke test fails instead of skipping, because skipping is
 how a dead service worker goes unnoticed.
 
@@ -74,7 +74,7 @@ how a dead service worker goes unnoticed.
 
 | Permission | Why |
 |---|---|
-| `webRequest` | Layer A, **listener mode only** — never blocks, redirects or rewrites. Hence no `webRequestBlocking`, no `declarativeNetRequest`. |
+| `webRequest` | Layer A, **listener mode only** - never blocks, redirects or rewrites. Hence no `webRequestBlocking`, no `declarativeNetRequest`. |
 | `downloads` | The point. Every download starts from an explicit click. |
 | `storage` | Per-tab index in `chrome.storage.session` (an MV3 worker restart loses nothing), options in `chrome.storage.local`. Nothing leaves the machine. |
 | `contextMenus` | The right-click entry points, including two-click "download all similar". |
@@ -151,8 +151,8 @@ second page.
 Scrolling and following links are GET-shaped and reversible, so they are
 exhaustive. **Clicking is not**, and it is governed differently: on an app where
 you are signed in, an indiscriminate clicker eventually hits "Delete", "Pay" or
-"Log out". A click therefore needs a positive reason — the control either wraps
-media or reads as a media control — and everything else is refused. Form
+"Log out". A click therefore needs a positive reason - the control either wraps
+media or reads as a media control - and everything else is refused. Form
 controls, anything inside a `<form>`, submit buttons, `download` attributes,
 `target="_blank"` and any label or class matching the transactional/destructive
 list are refused whatever else they look like. A link is never clicked; it is
@@ -164,12 +164,12 @@ Bounded by construction: 40 pages, 60 clicks and 40 scroll steps per page, a
 page. The rules live in `src/core/explore-policy.js` and are tested against a
 set of traps.
 
-## DRM — a hard boundary
+## DRM - a hard boundary
 
 **Magpie never circumvents DRM and contains no code path that could.**
 
-When a stream declares encryption — `#EXT-X-KEY` with any method other than
-`METHOD=NONE`, or a DASH `ContentProtection` element — or when the page calls
+When a stream declares encryption - `#EXT-X-KEY` with any method other than
+`METHOD=NONE`, or a DASH `ContentProtection` element - or when the page calls
 `navigator.requestMediaKeySystemAccess`, the affected media is marked
 `protected`: dimmed, badged `DRM`, its download control disabled, all three
 stream actions withheld, and the download queue refuses it even if it is
@@ -192,8 +192,8 @@ it.
 - **No telemetry, no analytics, no remote calls.** Beyond fetching what you asked for and `HEAD`-checking upgrades, it makes no network requests. No CDN, no web fonts.
 - **No account, login or sync.** The index lives in session storage and dies with the tab.
 - **Clustering is capped** at 1200 items per view (the score matrix is quadratic). The remainder is listed ungrouped and the panel says so rather than hiding it.
-- **A hero image with the same dimensions as the grid below it will cluster with that grid.** Magpie detects that the two sit in different repeated structures and zeroes the structural term — but the remaining four terms floor at 0.4625 for two images sharing a host, a directory and a file type, so the dimension term alone carries the rest of the way to 0.62. At identical dimensions the pair scores 0.6625 and merges. That is a limit of the current term weights, not of the repeated-group test; `strict` separates them.
-- **The explorer's safety rules are lexical, and only English and Italian.** An icon-only control labelled in a third language is not clicked — it fails closed, so you lose media rather than trigger something. Widen `RISK_WORDS` / `OPPORTUNITY_WORDS` in `src/core/explore-policy.js` for another locale.
+- **A hero image with the same dimensions as the grid below it will cluster with that grid.** Magpie detects that the two sit in different repeated structures and zeroes the structural term - but the remaining four terms floor at 0.4625 for two images sharing a host, a directory and a file type, so the dimension term alone carries the rest of the way to 0.62. At identical dimensions the pair scores 0.6625 and merges. That is a limit of the current term weights, not of the repeated-group test; `strict` separates them.
+- **The explorer's safety rules are lexical, and only English and Italian.** An icon-only control labelled in a third language is not clicked - it fails closed, so you lose media rather than trigger something. Widen `RISK_WORDS` / `OPPORTUNITY_WORDS` in `src/core/explore-policy.js` for another locale.
 - **The explorer has no rate-limit backoff.** The download queue honours 429 and `Retry-After`; the crawl only has a fixed 1.2 s gap between pages. On a site that throttles hard, slow it down or stop it.
 - **The explorer drives the tab you are looking at**, one page at a time, and cannot resume a crawl in a tab you have closed.
 - **It cannot see inside cross-origin iframes it is not injected into**, and no extension runs on `chrome://` pages or the Chrome Web Store.
@@ -204,9 +204,9 @@ Stated plainly rather than implied by silence:
 
 - **Arc, Dia, Brave and Edge have not been launched.** Nothing Chrome-only is used beyond `chrome.sidePanel`, which has a popup fallback, but that is an argument, not a test.
 - **The panel has been reviewed as screenshots, not used.** Nobody has driven it interactively for a long session; keyboard flow, scroll behaviour under load and hover states are unproven in practice.
-- **HAR import is tested against a synthetic HAR** — built from real image files, and proven to save them with the web server stopped, but not against an archive exported by DevTools itself.
+- **HAR import is tested against a synthetic HAR** - built from real image files, and proven to save them with the web server stopped, but not against an archive exported by DevTools itself.
 - **The explorer has only met a fixture app.** Two pages, four deliberate traps, everything on localhost. It has never walked a real third-party site, where the shapes are messier and the throttling is real.
-- **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests, a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel — not against Netflix or Spotify.
+- **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests, a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel - not against Netflix or Spotify.
 - **No DASH manifest has been fetched from a live CDN.** HLS has (Apple's public test stream, downloaded for real with the generated command).
 - **The 122-item bulk download was measured once**, on localhost. Behaviour against a rate-limiting CDN rests on the retry/backoff code, which has not met a real 429.
 
@@ -232,4 +232,4 @@ service of the sites you point it at, and the copyright of what you download, is
 on you. Being able to fetch something is not the same as being entitled to keep,
 republish or redistribute it.
 
-MIT licensed — see [LICENSE](LICENSE).
+MIT licensed - see [LICENSE](LICENSE).
