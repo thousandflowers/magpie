@@ -69,9 +69,13 @@ const MAX_STR = 4096;
  */
 export const MAX_DATA_URL = 1024 * 1024;
 const MAX_ITEMS = 2000;
-const MAX_PATH_NODES = 40;
-const MAX_CLASSES = 12;
-const MAX_COUNT_KEYS = 64;
+// Measured on a 414-item category page: the path was 35% of an item's weight
+// and the class counts 21%, at 2.2 KB per item. The engine reads at most the
+// cell, its grid and their ancestors; sixteen levels and eight classes a node
+// cover that with room to spare.
+const MAX_PATH_NODES = 16;
+const MAX_CLASSES = 8;
+const MAX_COUNT_KEYS = 32;
 
 function str(v, max = MAX_STR) {
   return typeof v === 'string' ? v.slice(0, max) : '';

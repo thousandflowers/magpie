@@ -51,6 +51,12 @@ export const OPPORTUNITY_WORDS = [
   'foto', 'immagini', 'video', 'anteprima', 'apri', 'continua', 'pagina',
 ];
 
+/** Query keys that mean "the next slice of the same thing". */
+export const PAGINATION_PARAMS = [
+  'page', 'p', 'pg', 'offset', 'start', 'from', 'after', 'before', 'cursor',
+  'filefrom', 'pagefrom', 'continue', 'skip',
+];
+
 export const EXPLORE_LIMITS = {
   /**
    * Scroll steps per page before giving up on an infinite feed. A step is most
@@ -77,6 +83,8 @@ export const EXPLORE_LIMITS = {
    */
   MAX_PAGE_MS: 45_000,
 };
+
+import { pathTokens, jaccard } from './url-normalize.js';
 
 function normalise(text) {
   return String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -207,11 +215,43 @@ export function shouldFollow(href, pageUrl, el) {
       return { follow: false, reason: 'reads as transactional or destructive' };
     }
   }
-  const path = normalise(target.pathname);
-  if (matchesAny(path.replace(/[-_/]+/g, ' '), RISK_WORDS)) {
-    return { follow: false, reason: 'path reads as transactional or destructive' };
+  // The query is part of the address: `index.php?action=edit` is an edit page.
+  const address = normalise(`${target.pathname} ${target.search}`).replace(/[-_/?&=:]+/g, ' ');
+  if (matchesAny(address, RISK_WORDS)) {
+    return { follow: false, reason: 'address reads as transactional or destructive' };
   }
   return { follow: true, reason: 'same origin' };
+}
+
+const dirOf = (pathname) => pathname.slice(0, pathname.lastIndexOf('/') + 1);
+const addressTokens = (u) => pathTokens(`${u.pathname}/${u.search}`.replace(/[?&=:]+/g, '/'));
+
+/**
+ * How much a link looks like a continuation of the page the crawl started on -
+ * the next page of the same gallery, a sub-album, a "more" link - against the
+ * front page, help and account links every page also carries. Higher is
+ * visited sooner; the crawl queue is sorted by it. Pure.
+ *
+ * @param {string} href absolute URL
+ * @param {string} startUrl where the crawl began
+ * @param {object} [el] link description, for its label
+ * @returns {number}
+ */
+export function linkPriority(href, startUrl, el) {
+  let target;
+  let start;
+  try {
+    target = new URL(href, startUrl);
+    start = new URL(startUrl);
+  } catch {
+    return 0;
+  }
+  const likeness = jaccard(addressTokens(start), addressTokens(target));
+  const label = el ? `${accessibleText(el)} ${tokenText(el)}` : '';
+  const continuation = matchesAny(label, OPPORTUNITY_WORDS) ? 0.3 : 0;
+  const paged = [...target.searchParams.keys()].some((k) => PAGINATION_PARAMS.includes(k.toLowerCase())) ? 0.3 : 0;
+  const nearby = dirOf(target.pathname) === dirOf(start.pathname) ? 0.1 : 0;
+  return likeness + continuation + paged + nearby;
 }
 
 /** Strip the fragment: /a#one and /a#two are the same document to a crawler. */

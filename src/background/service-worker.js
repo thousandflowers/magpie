@@ -239,6 +239,13 @@ const handlers = {
     const tabId = tabIdFor(message, sender);
     if (tabId == null) return { ok: false };
     if (sender && sender.frameId) return { ok: true };
+    // A crawl keeps one index across every page and route it passes through;
+    // a wiki's replaceState on load was moving each page's finds to history.
+    if (await isCrawling(tabId)) {
+      await setPageInfo(tabId, { url: message.url });
+      refreshPanel(tabId);
+      return { ok: true };
+    }
     const options = await getOptions();
     // Same document, new route: the player - and its DRM session - persist.
     await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory, keepFlags: true });
@@ -316,6 +323,9 @@ const handlers = {
       usesMse: state.usesMse,
       emeRequested: state.emeRequested,
       truncated: state.truncated,
+      historyTruncated: Boolean(state.historyTruncated),
+      trimmed: Boolean(state.trimmed),
+      storageError: state.storageError || '',
       historyCount: (state.history || []).length,
       items: itemsOf(state, { includeHistory: Boolean(message.includeHistory) }),
       options,

@@ -3,11 +3,17 @@ import assert from 'node:assert/strict';
 
 // The store talks to chrome.storage; give it an in-memory one before import.
 const session = new Map();
+const writes = [];
+let slowWriteMs = 0;
 globalThis.chrome = {
   storage: {
     session: {
       get: async (key) => (key == null ? Object.fromEntries(session) : { [key]: session.get(key) }),
-      set: async (obj) => { for (const [k, v] of Object.entries(obj)) session.set(k, structuredClone(v)); },
+      set: async (obj) => {
+        writes.push(Object.keys(obj)[0]);
+        await new Promise((r) => setTimeout(r, slowWriteMs));
+        for (const [k, v] of Object.entries(obj)) session.set(k, structuredClone(v));
+      },
       remove: async (keys) => { for (const k of [].concat(keys)) session.delete(k); },
     },
     local: { get: async () => ({}), set: async () => {} },
@@ -16,7 +22,7 @@ globalThis.chrome = {
 };
 
 const {
-  addCandidates, resetTab, beginNavigation, navigationOutcome, getTab, setPageInfo, patchTab, itemsOf,
+  addCandidates, resetTab, beginNavigation, navigationOutcome, getTab, setPageInfo, patchTab, itemsOf, flush, findItem,
 } = await import('../src/background/store.js');
 const { FILTER_CONFIG } = await import('../src/core/media-types.js');
 
@@ -112,4 +118,51 @@ test('data: URLs past the tab budget are refused and the tab says it is truncate
   // Retiring them frees the budget.
   await resetTab(tab, { keepHistory: false });
   assert.equal((await addCandidates(tab, [inline('D')])).added, 1);
+});
+
+test('flushes of one tab never overlap: changes during a write are written once, after it', async () => {
+  const tab = nextTab++;
+  await addCandidates(tab, [image('http://a.test/first.png')]);
+  await flush(tab);
+  writes.length = 0;
+  slowWriteMs = 30;
+  const first = flush(tab);
+  for (let i = 0; i < 5; i += 1) {
+    await addCandidates(tab, [image(`http://a.test/more-${i}.png`)]);
+    flush(tab); // would have been five more concurrent writes
+  }
+  await first;
+  await new Promise((r) => setTimeout(r, 80));
+  slowWriteMs = 0;
+  const ours = writes.filter((k) => k === `tab:${tab}`);
+  assert.equal(ours.length, 2, `one write in flight plus one for what changed meanwhile, got ${ours.length}`);
+  const stored = session.get(`tab:${tab}`);
+  assert.equal(stored.order.length, 6, 'the second write carried every change');
+});
+
+test('structure is stored compactly and read back exactly', async () => {
+  const tab = nextTab++;
+  const structuralPath = [
+    { tag: 'img', classes: ['grid-thumb', 'attachment-thumbnail'] },
+    { tag: 'a', classes: ['gallery-link'] },
+    { tag: 'li', classes: ['grid-item'] },
+    { tag: 'body', classes: [] },
+  ];
+  const classCounts = { 'grid-thumb': 12, 'gallery-link': 12, 'grid-item': 12 };
+  await addCandidates(tab, [image('http://a.test/t.png', { source: 'dom', structuralPath, classCounts, repeatDepth: 2 })]);
+  const state = await getTab(tab);
+  const stored = state.items['http://a.test/t.png'];
+  assert.equal(stored.structuralPath, undefined, 'the stored item carries no object tree');
+  assert.deepEqual(stored.path, ['img grid-thumb attachment-thumbnail', 'a gallery-link', 'li grid-item', 'body']);
+  assert.equal(typeof stored.counts, 'string');
+  const [read] = itemsOf(state);
+  assert.deepEqual(read.structuralPath, structuralPath);
+  assert.deepEqual(read.classCounts, classCounts);
+  assert.equal(read.repeatDepth, 2);
+  assert.deepEqual(findItem(state, 'http://a.test/t.png').structuralPath, structuralPath);
+  // A second sighting merges through the same door and keeps the structure.
+  await addCandidates(tab, [image('http://a.test/t.png', { source: 'net' })]);
+  const [again] = itemsOf(await getTab(tab));
+  assert.deepEqual(again.structuralPath, structuralPath);
+  assert.deepEqual(again.sources, ['dom', 'net']);
 });

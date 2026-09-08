@@ -22,6 +22,10 @@ const cache = new Map();
 const loading = new Map();
 /** @type {Map<number, ReturnType<typeof setTimeout>>} */
 const pendingFlush = new Map();
+/** @type {Map<number, Promise<void>>} tabId -> a write to session storage still in flight */
+const inflight = new Map();
+/** Tabs that changed again while their write was in flight. */
+const dirty = new Set();
 /** @type {Map<number, Promise<unknown>>} tabId -> tail of its mutation chain */
 const chains = new Map();
 
@@ -81,6 +85,10 @@ function emptyTab(tabId) {
     pendingGen: null,
     /** data: URL characters held, against FILTER_CONFIG.DATA_URI_TAB_BUDGET. */
     dataBytes: 0,
+    /** Set when the session history had to be dropped to fit in storage. */
+    historyTruncated: false,
+    /** Set when live items lost their structure to fit in storage. */
+    trimmed: false,
     updatedAt: 0,
   };
 }
@@ -145,7 +153,15 @@ function scheduleFlush(tabId) {
   pendingFlush.set(tabId, timer);
 }
 
-/** Write one tab's state through to session storage immediately. */
+/**
+ * Write one tab's state through to session storage.
+ *
+ * One write per tab at a time. A multi-megabyte state takes longer to
+ * serialise and ship than the 300 ms debounce, and a crawl changes it
+ * constantly; overlapping writes of the same key were piling up until the
+ * browser counted them together and refused for quota - at 3 MB of a 10 MB
+ * budget. A change during a write is flushed once, after it.
+ */
 export async function flush(tabId) {
   const state = cache.get(tabId);
   if (!state) return;
@@ -154,9 +170,53 @@ export async function flush(tabId) {
     clearTimeout(timer);
     pendingFlush.delete(tabId);
   }
+  if (inflight.has(tabId)) {
+    dirty.add(tabId);
+    return inflight.get(tabId);
+  }
+  const write = writeState(tabId, state).finally(() => {
+    inflight.delete(tabId);
+    if (dirty.delete(tabId)) flush(tabId);
+  });
+  inflight.set(tabId, write);
+  return write;
+}
+
+async function writeState(tabId, state) {
   try {
     await chrome.storage.session.set({ [key(tabId)]: state });
+    state.storageError = '';
   } catch (err) {
+    // Kept on the state so the panel can say what the browser said.
+    state.storageError = String((err && err.message) || err).slice(0, 200);
+    // Out of room - session storage is 10 MB for the whole extension, and a
+    // crawl across many pages fills it. The live page is worth more than
+    // what came before it: drop the history, say so, and try once more.
+    if (state.history && state.history.length) {
+      state.history = [];
+      state.historyTruncated = true;
+      try {
+        await chrome.storage.session.set({ [key(tabId)]: state });
+        warn('session history dropped for tab', tabId, 'to stay within storage');
+        return;
+      } catch {
+        /* still too big: fall through to trimming the live items */
+      }
+    }
+    // Last resort: keep every URL and status, lose the structure the
+    // clustering leans on. A worker restart then still restores the page.
+    if (!state.trimmed) {
+      for (const k of state.order) if (state.items[k]) state.items[k] = lighten(state.items[k]);
+      state.trimmed = true;
+      try {
+        await chrome.storage.session.set({ [key(tabId)]: state });
+        warn('index trimmed for tab', tabId, 'to stay within storage');
+        return;
+      } catch (again) {
+        error('session write failed for tab', tabId, again);
+        return;
+      }
+    }
     // Always reported: a failed write means a worker restart loses this tab.
     error('session write failed for tab', tabId, err);
   }
@@ -232,6 +292,18 @@ function dataChars(url) {
 }
 
 /**
+ * What an item keeps once its page is gone. The structural path and the class
+ * frequencies are most of an item's weight and only matter for clustering
+ * against neighbours on the same page; a history item has none.
+ */
+function lighten(item) {
+  const { structuralPath, classCounts, ...rest } = item;
+  void structuralPath;
+  void classCounts;
+  return { ...rest, path: [], counts: '', repeatDepth: -1, inRepeatedGroup: false };
+}
+
+/**
  * SPA route change or real navigation.
  * @param {number} tabId
  * @param {{url?: string, keepHistory?: boolean, olderThan?: number, keepFlags?: boolean}} opts
@@ -263,8 +335,9 @@ export async function resetTab(tabId, opts = {}) {
   // History survives a reset that found nothing live: two resets in a row (a
   // redirect hop, a replaceState on load) must not empty it.
   next.history = keep
-    ? [...(state.history || []), ...stale].slice(-FILTER_CONFIG.MAX_ITEMS_PER_TAB)
+    ? [...(state.history || []), ...stale.map(lighten)].slice(-FILTER_CONFIG.MAX_ITEMS_PER_TAB)
     : [];
+  next.historyTruncated = keep ? Boolean(state.historyTruncated) : false;
   next.updatedAt = Date.now();
   cache.set(tabId, next);
   await flush(tabId);
@@ -304,6 +377,49 @@ function preferDefined(a, b) {
   return a === undefined || a === null || a === '' || a === 0 ? b : a;
 }
 
+/* ------------------------------------------------------------------ *
+ * Stored shape
+ *
+ * chrome.storage.session charges for the in-memory size of the value tree,
+ * about three times its JSON, so the 10 MB quota is reached at roughly 3 MB
+ * of JSON - and the structural path (sixteen {tag, classes[]} nodes) and the
+ * class-count map are most of an item's objects. They are stored as one
+ * string per node and one string per map, and expanded when read. Class
+ * names cannot contain spaces, which is what makes the join safe.
+ * ------------------------------------------------------------------ */
+
+function packItem(item) {
+  const { structuralPath, classCounts, ...rest } = item;
+  return {
+    ...rest,
+    path: Array.isArray(structuralPath)
+      ? structuralPath.map((n) => [n.tag || '', ...(n.classes || [])].join(' '))
+      : rest.path || [],
+    counts: classCounts && typeof classCounts === 'object'
+      ? Object.entries(classCounts).map(([name, n]) => `${name} ${n}`).join(' ')
+      : rest.counts || '',
+  };
+}
+
+/** The shape the similarity engine and the panel read. Tolerates both shapes. */
+export function unpackItem(item) {
+  if (!item) return item;
+  if (item.structuralPath) return item; // seeded or legacy: already expanded
+  const { path, counts, ...rest } = item;
+  const structuralPath = (path || []).map((node) => {
+    const [tag, ...classes] = String(node).split(' ');
+    return { tag, classes };
+  });
+  const classCounts = {};
+  const tokens = counts ? counts.split(' ') : [];
+  for (let i = 0; i + 1 < tokens.length; i += 2) classCounts[tokens[i]] = Number(tokens[i + 1]) || 0;
+  return { ...rest, structuralPath, classCounts: counts ? classCounts : null };
+}
+
+const hasStructure = (stored) => Boolean(
+  (stored.path && stored.path.length) || (stored.structuralPath && stored.structuralPath.length),
+);
+
 const AV_KINDS = new Set(['video', 'audio', 'stream']);
 
 /** Once a page has asked for a key system, its audio and video stay protected. */
@@ -342,7 +458,7 @@ export async function addCandidates(tabId, candidates) {
       continue;
     }
 
-    const existing = state.items[normalized];
+    const existing = unpackItem(state.items[normalized]);
     if (existing) {
       const incomingSources = [raw.source || SOURCE.DOM];
       const merged = {
@@ -390,7 +506,7 @@ export async function addCandidates(tabId, candidates) {
       merged.status = protectedByEme(state, kind)
         ? STATUS.PROTECTED
         : mergeStatus(existing, { ...raw, sources: incomingSources });
-      state.items[normalized] = merged;
+      state.items[normalized] = packItem(merged);
       updated += 1;
       continue;
     }
@@ -409,7 +525,7 @@ export async function addCandidates(tabId, candidates) {
     state.dataBytes = (state.dataBytes || 0) + chars;
 
     state.counter += 1;
-    state.items[normalized] = {
+    state.items[normalized] = packItem({
       ...raw,
       kind,
       gen: state.gen || 0,
@@ -421,7 +537,7 @@ export async function addCandidates(tabId, candidates) {
         ? STATUS.PROTECTED
         : raw.status || (raw.source === SOURCE.DOM ? STATUS.REFERENCED : STATUS.BACKGROUND),
       firstSeen: raw.timestamp || Date.now(),
-    };
+    });
     state.order.push(normalized);
     added += 1;
   }
@@ -476,8 +592,7 @@ export async function collapseUpgradeDuplicates(tabId) {
 
   const rank = (key) => {
     const item = state.items[key];
-    const hasStructure = item.structuralPath && item.structuralPath.length ? 0 : 1;
-    return [hasStructure, item.firstSeen || 0];
+    return [hasStructure(item) ? 0 : 1, item.firstSeen || 0];
   };
 
   let collapsed = 0;
@@ -520,7 +635,7 @@ export async function collapseUpgradeDuplicates(tabId) {
 export function itemsOf(state, { includeHistory = false } = {}) {
   const live = state.order.map((k) => state.items[k]).filter(Boolean);
   const all = includeHistory ? [...live, ...(state.history || [])] : live;
-  return all.slice().sort((a, b) => {
+  return all.map(unpackItem).sort((a, b) => {
     const ra = STATUS_RANK[a.status] ?? 9;
     const rb = STATUS_RANK[b.status] ?? 9;
     if (ra !== rb) return ra - rb;
@@ -529,13 +644,13 @@ export function itemsOf(state, { includeHistory = false } = {}) {
 }
 
 export function findItem(state, idOrUrl) {
-  if (state.items[idOrUrl]) return state.items[idOrUrl];
+  if (state.items[idOrUrl]) return unpackItem(state.items[idOrUrl]);
   for (const k of state.order) {
     const item = state.items[k];
-    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return item;
+    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return unpackItem(item);
   }
   for (const item of state.history || []) {
-    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return item;
+    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return unpackItem(item);
   }
   return null;
 }

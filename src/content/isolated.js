@@ -42,7 +42,7 @@
 
   const DEBOUNCE_MS = 250;
   const MAX_ELEMENTS = 6000;
-  const MAX_PATH_DEPTH = 24;
+  const MAX_PATH_DEPTH = 16;
   const REPEAT_LOOKUP_DEPTH = 6;
   const REPEAT_MIN_SIBLINGS = 3;
   const MAX_COUNT_KEYS = 64;

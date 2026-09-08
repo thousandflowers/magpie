@@ -10,6 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  linkPriority,
   shouldClick, shouldFollow, crawlKey, accessibleText,
   RISK_WORDS, OPPORTUNITY_WORDS, EXPLORE_LIMITS,
 } from '../src/core/explore-policy.js';
@@ -164,4 +165,22 @@ test('a control inside a link is the link, and is left to the crawl queue', () =
   assert.match(reason, /inside a link/);
   assert.equal(shouldClick(el({ tag: 'span', text: 'show more photos', insideLink: true })).click, false);
   assert.equal(shouldClick(el({ tag: 'span', containsMedia: true, insideLink: false })).click, true);
+});
+
+test('a link whose query is an action is refused as its path would be', () => {
+  const page = 'https://wiki.example.org/wiki/Category:Birds';
+  assert.equal(shouldFollow('https://wiki.example.org/w/index.php?title=Category_talk:Birds&action=edit', page).follow, false);
+  assert.equal(shouldFollow('https://wiki.example.org/w/index.php?title=Category:Birds&oldid=5', page).follow, true);
+});
+
+test('links most like the start page are visited first', () => {
+  const start = 'https://wiki.example.org/wiki/Category:Pica_pica';
+  const nextPage = linkPriority('https://wiki.example.org/w/index.php?title=Category:Pica_pica&filefrom=Z', start, { text: 'next page' });
+  const subAlbum = linkPriority('https://wiki.example.org/wiki/Category:Pica_pica_in_art', start, { text: 'Pica pica in art' });
+  const frontPage = linkPriority('https://wiki.example.org/wiki/Main_Page', start, { text: 'Main page' });
+  const help = linkPriority('https://wiki.example.org/wiki/Help:Contents', start, { text: 'Help' });
+  const random = linkPriority('https://wiki.example.org/wiki/Special:Random/File', start, { text: 'Random file' });
+  assert.ok(subAlbum > frontPage && nextPage > frontPage, `sub ${subAlbum} next ${nextPage} front ${frontPage}`);
+  assert.ok(subAlbum > help && nextPage > help && frontPage >= random, `help ${help} random ${random}`);
+  assert.equal(linkPriority('/wiki/X', 'not a url'), 0); // no start page to compare against
 });

@@ -94,7 +94,7 @@ keys and options. Nothing in either run leaves the machine.
 |---|---|
 | `webRequest` | Layer A, **listener mode only** - never blocks, redirects or rewrites. Hence no `webRequestBlocking`, no `declarativeNetRequest`. |
 | `downloads` | The point. Every download starts from an explicit click. |
-| `storage` | Per-tab index in `chrome.storage.session` (an MV3 worker restart loses nothing), options in `chrome.storage.local`. Nothing leaves the machine. |
+| `storage` | Per-tab index in `chrome.storage.session` (an MV3 worker restart loses nothing), options in `chrome.storage.local`. Nothing leaves the machine. Session storage is 10 MB for the whole extension and charges about twice an item's JSON, so structure is stored compactly; past the limit the panel says what was dropped (history first, then per-item structure) rather than losing the index. |
 | `contextMenus` | The right-click entry points, including two-click "download all similar". |
 | `notifications` | Reports what a context-menu download queued, since that path never opens the panel. |
 | `sidePanel` | The panel. |
@@ -167,15 +167,22 @@ is how you get at photos that only exist after a "load more", a lightbox, or a
 second page.
 
 Scrolling and following links are GET-shaped and reversible, so they are
-exhaustive. **Clicking is not**, and it is governed differently: on an app where
+exhaustive - but not blind: links are visited most-like-the-start-page first
+(shared path words, a pagination parameter, a "next" or "more" label), so a
+gallery's next page and its sub-albums come before the front page, help and
+account links every page also carries. **Clicking is not**, and it is governed
+differently: on an app where
 you are signed in, an indiscriminate clicker eventually hits "Delete", "Pay" or
 "Log out". A click therefore needs a positive reason - the control either wraps
 media or reads as a media control - and everything else is refused. Form
 controls, anything inside a `<form>`, submit buttons, `download` attributes,
 `target="_blank"` and any label or class matching the transactional/destructive
-list are refused whatever else they look like. A link is never clicked; it is
-queued for navigation, where the same list is applied to the path, because
-`/logout` is a GET on most sites.
+list are refused whatever else they look like. A link is never clicked, and
+neither is anything inside one - the span wrapping a site's logo wraps an
+image, and clicking it is clicking the link. Links are queued for navigation
+instead, where the same list is applied to the path and the query, because
+`/logout` is a GET on most sites and `?action=edit` is an edit page. A page
+the tab reaches on its own is explored once like any other, never twice.
 
 Scrolling moves by most of a viewport at a time - through the window and
 through any pane that scrolls on its own - so every lazy image and every
@@ -228,7 +235,7 @@ Stated plainly rather than implied by silence:
 - **Arc, Dia, Brave and Edge have not been launched.** Nothing Chrome-only is used beyond `chrome.sidePanel`, which has a popup fallback, but that is an argument, not a test.
 - **The panel has been driven by a script, not by a person.** The end-to-end run selects a group, presses download, reads the progress line and checks the files; nobody has used it interactively for a long session, so keyboard flow, scroll behaviour under load and hover states are unproven in practice.
 - **HAR import is tested against a synthetic HAR** - built from real image files, and proven to save them with the web server stopped, but not against an archive exported by DevTools itself.
-- **The explorer has only met a fixture app.** Two pages, four deliberate traps, everything on localhost. It has never walked a real third-party site, where the shapes are messier and the throttling is real.
+- **The explorer has walked one real site.** A Wikimedia Commons category, headless: 18 pages in 150 s, subcategories and the videos/quality-images categories first, 1,800+ items, no trap touched, no loop. Pixabay, Unsplash and Openverse refused the headless browser (403) before it saw a page, so infinite-scroll sites behind bot protection remain unverified, as does any site where you are signed in.
 - **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests, a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel - not against Netflix or Spotify.
 - **No DASH manifest has been fetched from a live CDN.** HLS has (Apple's public test stream, downloaded for real with the generated command).
 - **The 122-item bulk download was measured once**, on localhost. Behaviour against a rate-limiting CDN rests on the retry/backoff code, which has not met a real 429.

@@ -78,6 +78,8 @@ const state = {
   items: [],
   options: {},
   truncated: false,
+  historyTruncated: false,
+  trimmed: false,
   historyCount: 0,
   emeRequested: false,
   selected: new Set(),
@@ -157,6 +159,8 @@ async function refresh({ consumeSeed = false } = {}) {
   state.options = response.options || {};
   state.truncated = Boolean(response.truncated);
   state.historyCount = response.historyCount || 0;
+  state.historyTruncated = Boolean(response.historyTruncated);
+  state.trimmed = Boolean(response.trimmed);
   state.emeRequested = Boolean(response.emeRequested);
   // The "reload the page" hint has done its job once anything arrives.
   if (state.notice && state.items.length) state.notice = '';
@@ -312,6 +316,12 @@ function updateBanner() {
   }
   if (state.notClustered) {
     notes.push(`${state.notClustered} items past the clustering limit are listed ungrouped`);
+  }
+  if (state.historyTruncated) {
+    notes.push('session history was dropped — the index outgrew session storage; the current page is intact');
+  }
+  if (state.trimmed) {
+    notes.push('index trimmed to fit storage — grouping falls back to URL shape for this page');
   }
   if (state.emeRequested) {
     notes.push('this page uses DRM — protected media cannot be downloaded');

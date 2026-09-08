@@ -791,3 +791,83 @@ navigation, and the `data:` budget refuses and frees as it should.
 all green, two consecutive runs. Still not verified: a HAR exported by DevTools
 itself, the explorer on a third-party site, the context menu driven
 mechanically, Arc, Dia, Brave, Edge.
+
+---
+
+# Tenth pass - the explorer against a real site
+
+Asked directly whether the explorer could walk a site and make every image
+load, the answer had to be measured. Wikimedia Commons (`Category:Pica_pica`)
+was the only public site that let a headless Chrome for Testing in; Pixabay,
+Unsplash and Openverse answered 403 from a bot wall before a page loaded, so
+infinite-scroll sites behind such walls stay unverified here. Each run below is
+150 s, stopped by the probe.
+
+## What the first run found
+
+1. **Scrolling jumped to the bottom.** `scrollThrough` scrolled to the page's
+   full height on each step, so an image or "load more" sentinel that only
+   loads when it intersects the viewport never did unless it sat at the end.
+   Fixture: 0 of 12 lazy images. It now moves by 85% of a viewport per step,
+   through the window and any pane that scrolls on its own, and follows a feed
+   that grows at the bottom until it stops growing. 12 of 12. On Commons the
+   first scroll alone took the page from 414 to 632 items.
+2. **The crawl never left page one**: 0 pages after 100 s, and the tab was on
+   the front page - repeatedly. The span wrapping the site logo wraps an image,
+   which is a positive reason to click; its `<a>` went to `Main_Page`; there the
+   same click happened again. A page reached by a stray navigation was being
+   explored without being counted, so nothing ever ended it. Two rules:
+   anything inside an `<a href>` is the link and is refused like one (the link
+   itself is collected for the queue), and a page the tab lands on by itself
+   is visited once - recorded, explored, counted - and never twice.
+3. **Click rounds had no clock.** A page thick with pointer controls (a wiki)
+   spends its 60 clicks on chrome that reveals nothing, each round followed by
+   a full re-scroll. Rounds now have a 45 s budget per page, and the re-scroll
+   happens only when a round changed the page's height or media count.
+4. **The queue was blind.** With links followed in discovery order, the 40-page
+   budget went to `Main_Page`, `Commons:Welcome`, `Village_pump`,
+   `Special:RecentChanges`, `Special:Random/File`, an `action=edit` page. Links
+   are now scored by likeness to the start page - shared address tokens
+   (Jaccard over path and query), a pagination parameter, a "next"/"more"
+   label - and visited highest first; the risk-word check covers the query, so
+   `?action=edit` is refused like `/edit`. Same start, next run: `Category:Pica`,
+   `Videos_of_Pica_pica`, `Quality_images_of_Pica_pica`, then the
+   subcategories (anatomy, captive, eggs, illustrations, juvenile, nests).
+5. **A route change during a crawl reset the crawl.** MediaWiki calls
+   `replaceState` on load; the `PAGE_RESET` that follows moved each page's
+   finds to history at every hop (`items 812 → 9, history 812`). A crawl keeps
+   one index; the same-document reset is skipped while one runs.
+
+## Storage, measured
+
+With one index across thirteen pages, `chrome.storage.session` refused writes
+at 2.9 MB of JSON. `QUOTA_BYTES` is 10,485,760 and single 8 MB values write
+fine; `getBytesInUse` explained it - the quota charges the in-memory size of
+the value tree, ~3x the JSON, and an item's structural path (sixteen
+`{tag, classes[]}` nodes) plus its class-count map were most of its objects.
+
+- The store now keeps both as strings - one per path node, one per map - and
+  expands them on read (`packItem`/`unpackItem`, tolerant of the expanded
+  shape for seeded states). Same 2,028 items: 7.3 MB charged instead of the
+  8.4 MB that 1,404 had cost. Path depth and class caps also came down
+  (16 nodes, 8 classes, 32 counts) from a measured 14.5-level average.
+- Writes are single-flight per tab: a change during a multi-megabyte write is
+  flushed once, after it, instead of piling overlapping writes of one key.
+- If a write still fails: history is dropped first (it travels light anyway -
+  no structure), then live items lose their structure (`trimmed`), and the
+  panel's banner says which happened; the URLs and statuses always survive a
+  worker restart. The browser's message is kept on the state.
+
+## Verified
+
+- Fixture: 41 → 44 flow assertions (lazy feed 12/12, logo-in-a-link not
+  clicked, page 1 loaded exactly once); 129 unit tests (link priority,
+  query-aware risk, compact round trip, single-flight flush).
+- Commons, 150 s: 13 pages, 67 clicks, 2,028 items (1,698 images, 166 videos,
+  164 audio), subcategories first, no trap, no loop, no trimming, no console
+  error of Magpie's own.
+- One harness lesson worth keeping: a tab behind the panel's tab is hidden,
+  and a hidden tab has its timers clamped to one a second and its
+  IntersectionObservers never fire. That masked the scroll result entirely;
+  every test page now opens in its own window, which is how the tab a person
+  is looking at behaves.
