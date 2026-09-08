@@ -57,16 +57,29 @@ Chrome 120+. Loads unchanged in Arc, Dia, Brave and Edge; without
 `chrome.sidePanel` the panel opens in a popup window instead.
 
 ```sh
-npm test           # 112 unit tests, then a service-worker smoke test in Chrome
+npm test           # 116 unit tests, the service-worker smoke test, then the end-to-end run
 npm run test:unit  # unit tests only, no browser needed
+npm run test:e2e   # the extension against a local gallery in a real Chrome (38 assertions)
 npm run test:dash  # DRM boundary checked in the real panel (18 assertions)
+npm run gallery    # serve that gallery on :8765 to try the extension by hand
 npm run screenshots
 ```
 
 `package.json` declares no dependencies. The browser checks look for a Chromium
 (`CHROME_PATH` points at one) and skip with a notice if none is found - except
-under `CI`, where the smoke test fails instead of skipping, because skipping is
-how a dead service worker goes unnoticed.
+under `CI`, where they fail instead of skipping, because skipping is how a dead
+service worker goes unnoticed. CI installs **Chrome for Testing** on purpose:
+branded Google Chrome 137 and later ignores `--load-extension` without a word,
+and the workflow refuses to continue on a branded build.
+
+The end-to-end run serves a gallery from the test process - thumbnails linking
+to originals, a hero, a toolbar of icons, a lazy section, an iframe that
+arrives late, a painted canvas and an inline `data:` image - loads the unpacked
+extension in Chrome, and reads the result back out of the real panel: what was
+indexed and by which layers, how it clustered, that "find originals" proved the
+full-size files with `HEAD` alone, and that the download wrote every original's
+exact bytes under the templated name. It also loads nothing from outside the
+machine.
 
 ---
 
@@ -203,12 +216,13 @@ it.
 Stated plainly rather than implied by silence:
 
 - **Arc, Dia, Brave and Edge have not been launched.** Nothing Chrome-only is used beyond `chrome.sidePanel`, which has a popup fallback, but that is an argument, not a test.
-- **The panel has been reviewed as screenshots, not used.** Nobody has driven it interactively for a long session; keyboard flow, scroll behaviour under load and hover states are unproven in practice.
+- **The panel has been driven by a script, not by a person.** The end-to-end run selects a group, presses download, reads the progress line and checks the files; nobody has used it interactively for a long session, so keyboard flow, scroll behaviour under load and hover states are unproven in practice.
 - **HAR import is tested against a synthetic HAR** - built from real image files, and proven to save them with the web server stopped, but not against an archive exported by DevTools itself.
 - **The explorer has only met a fixture app.** Two pages, four deliberate traps, everything on localhost. It has never walked a real third-party site, where the shapes are messier and the throttling is real.
 - **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests, a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel - not against Netflix or Spotify.
 - **No DASH manifest has been fetched from a live CDN.** HLS has (Apple's public test stream, downloaded for real with the generated command).
 - **The 122-item bulk download was measured once**, on localhost. Behaviour against a rate-limiting CDN rests on the retry/backoff code, which has not met a real 429.
+- **The context menu has not been driven mechanically.** Its two-click path shares the download queue and the similarity engine with the panel, both of which the end-to-end run exercises, but no test right-clicks an image.
 
 ---
 

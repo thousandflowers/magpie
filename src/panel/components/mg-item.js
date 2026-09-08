@@ -137,7 +137,7 @@ export class MgItem extends HTMLElement {
       },
       { once: true },
     );
-    img.src = item.url;
+    img.src = item.previewUrl || item.url;
     box.appendChild(img);
   }
 }

@@ -6,7 +6,7 @@
  * "webRequest" but not "webRequestBlocking" or declarativeNetRequest.
  */
 
-import { addCandidates } from './store.js';
+import { addCandidates, serialize } from './store.js';
 import { normalizeUrl } from '../core/url-normalize.js';
 import { classify, extOf, kindFromExt, rejectionReason } from '../core/media-types.js';
 import { SOURCE, STATUS } from '../shared/messages.js';
@@ -37,7 +37,7 @@ async function flushQueue() {
   queue.clear();
   for (const [tabId, items] of batches) {
     try {
-      const result = await addCandidates(tabId, items);
+      const result = await serialize(tabId, () => addCandidates(tabId, items));
       if ((result.added || result.updated) && onFlush) onFlush(tabId, result);
     } catch (err) {
       log('net flush failed', err);

@@ -8,7 +8,7 @@
 
 import {
   getTab, addCandidates, resetTab, setPageInfo, deleteTab, itemsOf,
-  findItem, getOptions, setOptions, flushAll, pruneClosedTabs, updateItem, patchTab,
+  findItem, getOptions, setOptions, flushAll, pruneClosedTabs, updateItem, patchTab, serialize,
 } from './store.js';
 import { installNetObserver, flushNow } from './net-observer.js';
 import {
@@ -151,6 +151,27 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   clearCrawl(tabId);
 });
 
+/**
+ * A navigation, seen from the browser side. This fires before the new
+ * document issues its first subresource request, and it reaches the worker in
+ * the same queue as the webRequest events, so the reset always lands before
+ * the network batch it must not wipe. The page's own document_start message
+ * travels through the renderer instead and can arrive after that batch - it
+ * did, and took the first dozen items with it.
+ */
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'loading') return;
+  serialize(tabId, async () => {
+    if (await isCrawling(tabId)) return; // a crawl keeps its index across pages
+    const options = await getOptions();
+    await resetTab(tabId, {
+      url: changeInfo.url || (tab && tab.url) || '',
+      keepHistory: options.keepSessionHistory,
+    });
+    refreshPanel(tabId);
+  });
+});
+
 if (chrome.runtime.onSuspend) {
   chrome.runtime.onSuspend.addListener(() => {
     flushNow();
@@ -173,22 +194,19 @@ const handlers = {
   async [MSG.PAGE_INFO](message, sender) {
     const tabId = tabIdFor(message, sender);
     if (tabId == null) return { ok: false };
-    const crawling = await isCrawling(tabId);
-    if (message.navigation && !crawling) {
-      const options = await getOptions();
-      await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory });
-    }
+    if (sender && sender.frameId) return { ok: true }; // only the top document names the page
+    // The index itself is reset from chrome.tabs.onUpdated (see below); this
+    // message only names the page and, during a crawl, resumes the walk.
     await setPageInfo(tabId, { url: message.url, title: message.title });
     refreshPanel(tabId);
-    // A crawl walks the tab from page to page; wiping the index on each hop
-    // would throw away exactly what it went to collect.
-    if (message.navigation && crawling) await resumeAfterNavigation(tabId);
+    if (message.navigation && (await isCrawling(tabId))) await resumeAfterNavigation(tabId);
     return { ok: true };
   },
 
   async [MSG.PAGE_RESET](message, sender) {
     const tabId = tabIdFor(message, sender);
     if (tabId == null) return { ok: false };
+    if (sender && sender.frameId) return { ok: true };
     const options = await getOptions();
     await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory });
     refreshPanel(tabId);
@@ -394,11 +412,26 @@ const handlers = {
   },
 };
 
+/**
+ * Messages a page sends about itself are applied in the order they were sent,
+ * through the store's per-tab chain (which the network observer shares).
+ * Without this, the document_start PAGE_INFO (which resets the index) and the
+ * DOMContentLoaded one (which carries the title and is followed by the first
+ * DOM candidates) race through their awaits, and the reset can land last -
+ * wiping the title and everything found so far.
+ */
+const ORDERED = new Set([
+  MSG.PAGE_INFO, MSG.PAGE_RESET, MSG.DOM_CANDIDATES, MSG.MAIN_CANDIDATES,
+  MSG.MSE_DETECTED, MSG.EME_DETECTED, MSG.IMPORT_HAR, MSG.CLEAR_TAB,
+]);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
   const handler = handlers[message.type];
   if (!handler) return false;
-  handler(message, sender)
+  const tabId = tabIdFor(message, sender);
+  const run = () => handler(message, sender);
+  (ORDERED.has(message.type) && tabId != null ? serialize(tabId, run) : run())
     .then(sendResponse)
     .catch((err) => {
       error('handler failed', message.type, err);

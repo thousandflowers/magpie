@@ -17,21 +17,30 @@ jobs:
         with:
           node-version: lts/*
 
+      # Chrome for Testing, on purpose. Branded Google Chrome (137 and later)
+      # ignores --load-extension without a word: the browser starts, no
+      # service worker ever registers, and the smoke test reads exactly like a
+      # regression in the extension. That is what turned every earlier run red.
       - name: Install Chrome for Testing
         id: chrome
-        uses: browser-actions/setup-chrome@v1
+        uses: browser-actions/setup-chrome@v2
         with:
           chrome-version: stable
+          install-dependencies: true
 
-      - name: Export CHROME_PATH
+      - name: Export CHROME_PATH and prove it is a Chrome for Testing build
         run: |
           echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
-          "${{ steps.chrome.outputs.chrome-path }}" --version
+          version="$("${{ steps.chrome.outputs.chrome-path }}" --version)"
+          echo "$version"
+          case "$version" in
+            *"for Testing"*) ;;
+            *) echo "::error::$version is a branded build and will not load an unpacked extension"; exit 1 ;;
+          esac
 
       # The extension has no dependencies, so there is nothing to install.
-      # CI is set by GitHub Actions, which makes the service-worker smoke test
-      # refuse to skip: if Chrome is missing, or the worker fails to register,
-      # or it registers with a console error, this step exits non-zero and the
-      # build fails. That is the point of it.
-      - name: Unit tests and service-worker smoke test
+      # CI is set by GitHub Actions, which makes the browser checks refuse to
+      # skip: if Chrome is missing, the worker fails to register, or the
+      # end-to-end run finds a wrong byte, this step exits non-zero.
+      - name: Unit tests, service-worker smoke test, end-to-end run
         run: npm test

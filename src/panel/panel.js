@@ -98,6 +98,8 @@ const state = {
   harBodies: new Map(),
   kinds: new Set(['image', 'video', 'audio', 'stream']),
   renderToken: 0,
+  /** A one-line hint for the banner, e.g. that the page needs a reload. */
+  notice: '',
 };
 
 /* ------------------------------------------------------------------ *
@@ -251,6 +253,8 @@ async function render() {
   state.groups = groups;
 
   el.empty.hidden = items.length > 0;
+  // Tiles from the previous render are about to be dropped; stop watching them.
+  revealObserver.disconnect();
   const fragment = document.createDocumentFragment();
 
   groups.forEach((group, index) => {
@@ -300,6 +304,7 @@ function hostLabel() {
 
 function updateBanner() {
   const notes = [];
+  if (state.notice) notes.push(state.notice);
   if (state.truncated) {
     notes.push(`index capped at ${FILTER_CONFIG.MAX_ITEMS_PER_TAB} items — later finds were dropped`);
   }
@@ -682,6 +687,16 @@ async function downloadSynthetic(item, index, total) {
   return true;
 }
 
+/** A data: image is already in hand: write it without the download queue. */
+async function saveDataUrl(item, index, total) {
+  const blob = await (await fetch(item.url)).blob();
+  saveBlob(blob, applyTemplate(el.template.value || DEFAULT_TEMPLATE, tokensFor(
+    { ...item, mimeType: blob.type || item.mimeType },
+    { pageUrl: state.pageUrl, pageTitle: state.pageTitle, index, total },
+  )));
+  return true;
+}
+
 /** True when the imported capture holds this item's bytes. */
 function hasHarBody(item) {
   return state.harBodies.has(item.normalizedUrl);
@@ -708,7 +723,8 @@ async function downloadItems(items) {
   // Anything already in hand — a canvas capture, or bytes from an imported
   // HAR — is written here; only what genuinely has to be fetched goes to the
   // background queue.
-  const local = downloadable.filter((i) => i.url.startsWith('magpie-') || hasHarBody(i));
+  const inHand = (i) => i.url.startsWith('magpie-') || i.url.startsWith('data:') || hasHarBody(i);
+  const local = downloadable.filter(inHand);
   const network = downloadable.filter((i) => !local.includes(i));
 
   let index = 0;
@@ -718,6 +734,8 @@ async function downloadItems(items) {
     index += 1;
     if (hasHarBody(item)) {
       if (saveFromHar(item, index, downloadable.length)) fromHar += 1;
+    } else if (item.url.startsWith('data:')) {
+      if (await saveDataUrl(item, index, downloadable.length)) captured += 1;
     } else if (await downloadSynthetic(item, index, downloadable.length)) {
       captured += 1;
     }
@@ -736,7 +754,7 @@ async function downloadItems(items) {
     type: MSG.DOWNLOAD_ITEMS,
     ids: network.map((i) => i.id),
     template: el.template.value || DEFAULT_TEMPLATE,
-    writeSidecar: true,
+    writeSidecar: Boolean(state.options.writeSidecar),
     groupLabel: state.seedId ? 'similar' : '',
   });
   if (response.ok) {
@@ -863,7 +881,10 @@ el.confirmedOnly.addEventListener('change', render);
 el.includeHistory.addEventListener('change', () => refresh());
 
 el.rescan.addEventListener('click', async () => {
-  await toTab({ type: MSG.SCAN_NOW });
+  const response = await toTab({ type: MSG.SCAN_NOW });
+  // A tab opened before Magpie was installed has no content script until it
+  // is reloaded; say so instead of showing an empty list forever.
+  state.notice = response.ok ? '' : 'Magpie is not running in this tab yet - reload the page, then rescan';
   scheduleRefresh();
 });
 

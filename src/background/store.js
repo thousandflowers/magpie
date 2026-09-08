@@ -18,8 +18,28 @@ const FLUSH_DELAY_MS = 300;
 
 /** @type {Map<number, object>} */
 const cache = new Map();
+/** @type {Map<number, Promise<object>>} tabId -> a storage read already in flight */
+const loading = new Map();
 /** @type {Map<number, ReturnType<typeof setTimeout>>} */
 const pendingFlush = new Map();
+/** @type {Map<number, Promise<unknown>>} tabId -> tail of its mutation chain */
+const chains = new Map();
+
+/**
+ * Run `fn` after every earlier serialized operation on this tab.
+ *
+ * A page's own messages (reset, page info, DOM candidates) and the network
+ * observer's batches all pass through here, so they are applied in the order
+ * they happened rather than the order their awaits resolved. Without it the
+ * document_start reset could land after the title, after the first DOM scan,
+ * or after the first network batch - and wipe them.
+ */
+export function serialize(tabId, fn) {
+  const previous = chains.get(tabId) || Promise.resolve();
+  const next = previous.then(fn, fn);
+  chains.set(tabId, next.catch(() => {}));
+  return next;
+}
 
 export const DEFAULT_OPTIONS = {
   threshold: 'balanced',
@@ -81,17 +101,28 @@ export async function setOptions(patch) {
 /** @returns {Promise<object>} never null — an unknown tab gets a fresh state. */
 export async function getTab(tabId) {
   if (cache.has(tabId)) return cache.get(tabId);
-  let state = null;
+  if (loading.has(tabId)) return loading.get(tabId);
+  const read = (async () => {
+    let state = null;
+    try {
+      const stored = await chrome.storage.session.get(key(tabId));
+      state = stored[key(tabId)] || null;
+    } catch (err) {
+      warn('session read failed', err);
+    }
+    if (!state || typeof state !== 'object' || !state.items) state = emptyTab(tabId);
+    state.tabId = tabId;
+    // A reset may have installed a newer state while this read was in flight;
+    // two concurrent callers must end up holding the same object.
+    if (!cache.has(tabId)) cache.set(tabId, state);
+    return cache.get(tabId);
+  })();
+  loading.set(tabId, read);
   try {
-    const stored = await chrome.storage.session.get(key(tabId));
-    state = stored[key(tabId)] || null;
-  } catch (err) {
-    warn('session read failed', err);
+    return await read;
+  } finally {
+    loading.delete(tabId);
   }
-  if (!state || typeof state !== 'object' || !state.items) state = emptyTab(tabId);
-  state.tabId = tabId;
-  cache.set(tabId, state);
-  return state;
 }
 
 function scheduleFlush(tabId) {
@@ -125,6 +156,7 @@ export async function flushAll() {
 
 export async function deleteTab(tabId) {
   cache.delete(tabId);
+  chains.delete(tabId);
   const timer = pendingFlush.get(tabId);
   if (timer) clearTimeout(timer);
   pendingFlush.delete(tabId);
@@ -187,6 +219,11 @@ function mergeStatus(existing, incoming) {
   if (existing.status === STATUS.PROTECTED || incoming.status === STATUS.PROTECTED) {
     return STATUS.PROTECTED;
   }
+  // A decoded <img> or a readable canvas is proof the bytes arrived; a later
+  // DOM-only sighting must not talk that back down to "referenced".
+  if (existing.status === STATUS.CONFIRMED || incoming.status === STATUS.CONFIRMED) {
+    return STATUS.CONFIRMED;
+  }
   const sources = new Set([...(existing.sources || []), ...(incoming.sources || [])]);
   const sawDom = sources.has(SOURCE.DOM);
   const sawNet = sources.has(SOURCE.NET) || sources.has(SOURCE.MAIN) || sources.has(SOURCE.HAR);
@@ -200,6 +237,13 @@ function mergeStatus(existing, incoming) {
 
 function preferDefined(a, b) {
   return a === undefined || a === null || a === '' || a === 0 ? b : a;
+}
+
+const AV_KINDS = new Set(['video', 'audio', 'stream']);
+
+/** Once a page has asked for a key system, its audio and video stay protected. */
+function protectedByEme(state, kind) {
+  return Boolean(state.emeRequested) && AV_KINDS.has(kind);
 }
 
 /**
@@ -270,9 +314,13 @@ export async function addCandidates(tabId, candidates) {
         frameUrl: preferDefined(existing.frameUrl, raw.frameUrl),
         frameOrigin: preferDefined(existing.frameOrigin, raw.frameOrigin),
         protectedReason: preferDefined(existing.protectedReason, raw.protectedReason),
+        previewUrl: preferDefined(existing.previewUrl, raw.previewUrl),
+        synthetic: preferDefined(existing.synthetic, raw.synthetic),
         sources: [...new Set([...(existing.sources || []), ...incomingSources])],
       };
-      merged.status = mergeStatus(existing, { ...raw, sources: incomingSources });
+      merged.status = protectedByEme(state, kind)
+        ? STATUS.PROTECTED
+        : mergeStatus(existing, { ...raw, sources: incomingSources });
       state.items[normalized] = merged;
       updated += 1;
       continue;
@@ -292,7 +340,9 @@ export async function addCandidates(tabId, candidates) {
       normalizedUrl: normalized,
       url: raw.url,
       sources: [raw.source || SOURCE.DOM],
-      status: raw.status || (raw.source === SOURCE.DOM ? STATUS.REFERENCED : STATUS.BACKGROUND),
+      status: protectedByEme(state, kind)
+        ? STATUS.PROTECTED
+        : raw.status || (raw.source === SOURCE.DOM ? STATUS.REFERENCED : STATUS.BACKGROUND),
       firstSeen: raw.timestamp || Date.now(),
     };
     state.order.push(normalized);

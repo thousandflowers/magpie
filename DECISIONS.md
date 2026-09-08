@@ -601,3 +601,92 @@ One bug found and fixed in the same pass: `pageFinished` incremented the page
 counter in memory and then called `stopCrawl`, which re-reads from storage - so
 a finished crawl reported one page fewer than it had visited. The counters are
 now persisted before any branch that stops.
+
+---
+
+# Eighth pass - a real run finds what reading cannot
+
+The panel had been looked at as screenshots and the pipeline reasoned about;
+this pass loaded the unpacked extension into Chrome, pointed it at a page and
+read everything back out of the actual panel. `test/browser/e2e.mjs` is that
+run, kept: 38 assertions, in `npm test`, against a gallery that
+`test/fixtures/gallery-server.mjs` serves from the test process (every image is
+generated noise, so an original is always bigger than its thumbnail and nothing
+binary is committed). Version 0.1.1.
+
+## CI had been red on every run since the first commit
+
+`browser-actions/setup-chrome@v1` installed branded Google Chrome 151 on the
+runner. Branded Chrome 137 and later ignores `--load-extension` without a word,
+so the worker never registered and the smoke test failed exactly the way a real
+regression would. Locally the harness found Chrome for Testing and passed,
+which is why nobody noticed. The workflow now uses `setup-chrome@v2` (Chrome for
+Testing for the channel names) and refuses to continue unless `--version` says
+"for Testing"; the smoke test prints the target list and Chrome's stderr when
+the worker is missing, so the next silent failure explains itself.
+
+## Bugs the run found, all fixed
+
+1. **Any iframe reset the tab and renamed the page.** The content script sent
+   its document_start `PAGE_INFO` from every frame, and the worker treated each
+   as a navigation: an ad or an embed arriving late wiped the index and set
+   `pageUrl` to the frame's URL, so downloads landed under
+   `magpie/host/frame.html/`. Only the top document reports now, and the worker
+   ignores page messages from `frameId > 0` regardless.
+2. **The navigation reset raced the network batch.** The reset came from the
+   page's document_start message, which travels through the renderer; the
+   `webRequest` events come from the browser. Their order is not defined, and
+   in traces the reset landed after the first batch often enough to leave the
+   thumbnails "DOM only". The reset now comes from `chrome.tabs.onUpdated`
+   (`status: loading`), which fires before the new document's first subresource
+   request and shares the worker's event queue with `webRequest`. The message
+   still names the page and resumes a crawl.
+3. **Two messages a few milliseconds apart lost the title and the first
+   candidates.** Page messages and network batches for one tab now run through
+   one serialized chain (`serialize()` in the store), and `getTab` is
+   single-flight so two concurrent cache misses cannot install two different
+   state objects.
+4. **`confirmed` regressed to `referenced` on the second scan.** `mergeStatus`
+   derived status from layers only, so a decoded `<img>`, a canvas or a `data:`
+   image - DOM-only by nature - was talked down on every rescan. Confirmed is
+   now sticky.
+5. **"Done" was never reported.** `finishIfDone` set the flag after the last
+   emit, so the progress line stayed at `12/12 fetched` forever and the sidecar
+   was never written. It emits now. The panel also asked for a sidecar on every
+   download regardless of the option; it now reads `writeSidecar` from options.
+6. **A `data:` image over 4 KB was truncated into a corrupt file.** The
+   sanitizer capped every URL at 4096 characters. A `data:` URL is the file: it
+   is kept whole up to 1 MiB and dropped beyond that, never cut. Unit-tested.
+7. **The wrong frame answered capture and highlight requests.** Both messages
+   reach every frame, and a frame without the element replied "gone" first,
+   winning the race. Only the frame holding the element responds.
+8. **Two fields never survived the sanitizer.** `synthetic` (so every capture
+   was named `inline-svg`, canvases included) and the new `previewUrl`, which
+   lets a link-target original's tile render from its thumbnail instead of
+   pulling the full-size file - measured: zero `GET`s for originals before
+   "find originals", where there had been twelve.
+9. Smaller: media indexed after the page requested a key system now arrives
+   `protected` (only earlier items were being marked); HAR streams no longer get
+   the non-status `stream`; the panel's `IntersectionObserver` is disconnected
+   before each re-render instead of holding every tile ever drawn; pressing
+   rescan on a tab that has no content script (opened before the extension was
+   installed) says to reload the page instead of showing an empty list.
+
+## What the harness taught
+
+- `Browser.setDownloadBehavior` over CDP overrides the extension's own
+  `filename`: every file lands as its URL basename or a GUID, which reads
+  exactly like a broken template. The download directory is set through the
+  profile's `Preferences` instead, and the extension's paths come out as they
+  do in a normal Chrome.
+- Attaching the debugger to the service worker and navigating in the same
+  instant loses the page's `webRequest` events about half the time. Nothing
+  attaches to the worker in normal use; the run waits half a second.
+
+## Verified
+
+- `npm test`: 116 unit tests, smoke test, 38 end-to-end assertions, all green,
+  four consecutive runs with the ordering trace enabled.
+- Live `en.wikipedia.org/wiki/Eurasian_magpie`: 57 items (54 images, 3 audio),
+  13 confirmed by both layers, 23 `/thumb/` URLs; six probed, six upgraded
+  (`500px-…02.jpg` → the 12,070,770-byte original); no console errors.
