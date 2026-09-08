@@ -52,8 +52,14 @@ export const OPPORTUNITY_WORDS = [
 ];
 
 export const EXPLORE_LIMITS = {
-  /** Scroll steps per page before giving up on an infinite feed. */
-  MAX_SCROLL_STEPS: 40,
+  /**
+   * Scroll steps per page before giving up on an infinite feed. A step is most
+   * of a viewport, so every lazy image on the way down actually intersects;
+   * 120 of them cover a long feed without letting an endless one run forever.
+   */
+  MAX_SCROLL_STEPS: 120,
+  /** Pause after each scroll step, for an IntersectionObserver to fire. */
+  SCROLL_SETTLE_MS: 200,
   /** Clicks per page. A gallery needs many; a runaway loop must still end. */
   MAX_CLICKS: 60,
   /** Pages visited in one crawl. */

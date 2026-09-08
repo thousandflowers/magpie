@@ -162,6 +162,9 @@ try {
   check(Boolean(has(crawled, EXPLORE.lightboxPath)), 'the lightbox was opened and its image indexed');
   check(range(EXPLORE.page2).every((n) => has(crawled, EXPLORE.page2Path(n))), 'page 2 was followed and its images kept in the same index');
   check(range(EXPLORE.visible).every((n) => has(crawled, EXPLORE.visiblePath(n))), 'page 1 items survived the hop');
+  const lazyLoaded = range(EXPLORE.lazy).filter((n) => { const i = has(crawled, EXPLORE.lazyPath(n)); return i && i.sources.includes('net'); });
+  check(lazyLoaded.length === EXPLORE.lazy,
+    `scrolling page 2 made every lazy image load, not just the last (${lazyLoaded.length}/${EXPLORE.lazy} fetched)`);
   const sprung = site.hits.filter((h) => h.path.startsWith('/trap/') || h.path.endsWith('.zip'));
   check(sprung.length === 0, `no trap was touched${sprung.length ? `: ${sprung.map((h) => h.path).join(', ')}` : ''}`);
   check(crawled.pageUrl === `${site.origin}/explore/2`, `the tab ended on page 2 (${crawled.pageUrl})`);
@@ -191,8 +194,16 @@ try {
   }
   check(/HAR: merged 4 new/.test(imported) && /3 with bodies/.test(imported), `HAR import reported (${imported})`);
   await waitFor(async () => (await q.tileCount()) >= crawled.items.length + 4, { label: 'HAR tiles' });
-  for (const c of captured) await q.clickTile(c.name);
-  await q.clickTile('no-body.png');
+  // The three together: similarity selection seeded from a HAR item (no DOM,
+  // no dimensions - URL shape and host carry it), then the download.
+  await q.inPanel(`document.getElementById('clear').click(), true`);
+  await q.clickTile(captured[0].name, 2);
+  await sleep(300);
+  await q.clickButton('select similar to this');
+  const similarHar = await q.inPanel(`[...document.querySelectorAll('mg-item[selected]')].map((t) => t.item.url)`);
+  check(captured.every((c) => similarHar.some((u) => u.endsWith(c.name))) && !similarHar.some((u) => /\/(explore|spa)\//.test(u)),
+    `"select similar" from one HAR photo takes the other captured photos and nothing from the page (${similarHar.length} selected)`);
+  if (!similarHar.some((u) => u.endsWith('no-body.png'))) await q.clickTile('no-body.png');
   await q.inPanel(`document.getElementById('download').click(), true`);
   const harDone = await waitFor(async () => { const t = await q.progress(); return /1 failed/.test(t) ? t : null; },
     { label: 'the HAR download to settle', timeout: 40000 }).catch(() => 'timed out');
@@ -203,6 +214,7 @@ try {
 
   /* ================= E. the panel's own controls ================= */
 
+  await q.clickButton('close').catch(() => null); // Escape closes an open drawer before it clears anything
   await q.inPanel(`document.getElementById('clear').click(), true`);
   await q.inPanel(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true })), true`);
   const firstGroup = await q.inPanel(`document.querySelector('mg-group').querySelectorAll('mg-item').length`);

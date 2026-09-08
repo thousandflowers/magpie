@@ -78,9 +78,15 @@ export async function launchWithExtension(binary, port, { downloadDir } = {}) {
   return { chrome, client, errors, worker, extensionId: new URL(worker.url).host };
 }
 
-/** Open a URL as a tab and attach to it, so its errors are collected too. */
+/**
+ * Open a URL in its own window and attach to it, so its errors are collected.
+ * Its own window, not a tab behind the panel's: a hidden tab has its timers
+ * clamped to one a second and its IntersectionObservers never fire, which is
+ * not how the tab a person is looking at behaves - and the explorer relies on
+ * both to make lazy images load.
+ */
 export async function openPage(client, url) {
-  const { targetId } = await client.send('Target.createTarget', { url });
+  const { targetId } = await client.send('Target.createTarget', { url, newWindow: true });
   const session = await attach(client, targetId);
   return { targetId, session };
 }

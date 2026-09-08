@@ -177,7 +177,12 @@ list are refused whatever else they look like. A link is never clicked; it is
 queued for navigation, where the same list is applied to the path, because
 `/logout` is a GET on most sites.
 
-Bounded by construction: 40 pages, 60 clicks and 40 scroll steps per page, a
+Scrolling moves by most of a viewport at a time - through the window and
+through any pane that scrolls on its own - so every lazy image and every
+"load more" sentinel on the way down actually intersects; jumping straight to
+the bottom would load only what sits there.
+
+Bounded by construction: 40 pages, 60 clicks and 120 scroll steps per page, a
 1.2 s gap between navigations, and a stop that reaches both the queue and the
 page. The rules live in `src/core/explore-policy.js` and are tested against a
 set of traps.

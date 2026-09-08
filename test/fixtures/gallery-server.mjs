@@ -104,6 +104,7 @@ const IMAGE_ROUTES = [
   [/^\/uploads\/explore\/hidden-(\d)\.png$/, (m) => [300, 200, 910 + Number(m[1])]],
   [/^\/uploads\/explore\/lightbox\.png$/, () => [1200, 800, 930]],
   [/^\/uploads\/explore\/page2-(\d)\.png$/, (m) => [300, 200, 940 + Number(m[1])]],
+  [/^\/uploads\/explore\/lazy-(\d+)\.png$/, (m) => [300, 200, 960 + Number(m[1])]],
 ];
 
 function imageSpec(pathname) {
@@ -281,7 +282,11 @@ export const EXPLORE = {
   visible: 2,
   hidden: 4,
   page2: 3,
+  /** Lazy images on page 2, each a viewport apart, loaded by an IntersectionObserver with no margin. */
+  lazy: 12,
+  lazyGap: 900,
   visiblePath: (n) => `/uploads/explore/visible-${n}.png`,
+  lazyPath: (n) => `/uploads/explore/lazy-${n}.png`,
   hiddenPath: (n) => `/uploads/explore/hidden-${n}.png`,
   lightboxPath: '/uploads/explore/lightbox.png',
   page2Path: (n) => `/uploads/explore/page2-${n}.png`,
@@ -338,7 +343,23 @@ const EXPLORE_2_HTML = `<!doctype html>
       ${range(EXPLORE.page2).map((n) => `<img src="${EXPLORE.page2Path(n)}" width="300" height="200" alt="page2 ${n}">`).join('\n      ')}
     </div>
     <p><a href="/explore/1">Pagina 1</a> · <a href="/trap/logout">Esci</a></p>
+    <!-- A long lazy feed: each image sits a viewport below the last and gets
+         its src only when it actually intersects. Jumping to the bottom of the
+         page loads the last one; only scrolling through loads them all. -->
+    <section class="feed">
+      ${range(EXPLORE.lazy).map((n) => `<figure style="height:${EXPLORE.lazyGap}px;margin:0"><img class="lazy" data-lazy-src="${EXPLORE.lazyPath(n)}" width="300" height="200" alt="lazy ${n}"></figure>`).join('\n      ')}
+    </section>
   </main>
+  <script>
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        e.target.src = e.target.dataset.lazySrc;
+        io.unobserve(e.target);
+      }
+    });
+    for (const img of document.querySelectorAll('img.lazy')) io.observe(img);
+  </script>
 </body>
 </html>`;
 
