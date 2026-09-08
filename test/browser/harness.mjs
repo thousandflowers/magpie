@@ -5,7 +5,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +41,15 @@ export function findChrome() {
   return null;
 }
 
-export function launchChrome(binary, port, extras = []) {
+/**
+ * @param {string} binary
+ * @param {number} port
+ * @param {string[]} [extras] extra command-line switches
+ * @param {{downloadDir?: string}} [opts] where downloads land. Set through the
+ *   profile rather than CDP's Browser.setDownloadBehavior, which overrides the
+ *   extension's own `filename` and names every file after its URL or a GUID.
+ */
+export function launchChrome(binary, port, extras = [], opts = {}) {
   // Chrome fails to load a bad --load-extension path silently: the browser
   // starts, no worker registers, and it reads exactly like a regression in the
   // extension. Check the path here so it reports itself instead.
@@ -52,6 +60,12 @@ export function launchChrome(binary, port, extras = []) {
     );
   }
   const profile = mkdtempSync(join(tmpdir(), 'magpie-profile-'));
+  if (opts.downloadDir) {
+    mkdirSync(join(profile, 'Default'), { recursive: true });
+    writeFileSync(join(profile, 'Default', 'Preferences'), JSON.stringify({
+      download: { default_directory: opts.downloadDir, prompt_for_download: false },
+    }));
+  }
   const child = spawn(binary, [
     '--headless=new',
     `--remote-debugging-port=${port}`,
@@ -143,7 +157,8 @@ export function collectErrors(client, sink) {
       const d = m.params.exceptionDetails;
       sink.push(`uncaught: ${d.exception?.description || d.text}`);
     } else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
-      sink.push(`log: ${m.params.entry.text}`);
+      const { text, url } = m.params.entry;
+      sink.push(`log: ${text}${url ? ` (${url})` : ''}`);
     } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
       sink.push(`console.error: ${m.params.args.map((a) => a.value ?? a.description).join(' ')}`);
     }

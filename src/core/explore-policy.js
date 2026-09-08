@@ -51,9 +51,21 @@ export const OPPORTUNITY_WORDS = [
   'foto', 'immagini', 'video', 'anteprima', 'apri', 'continua', 'pagina',
 ];
 
+/** Query keys that mean "the next slice of the same thing". */
+export const PAGINATION_PARAMS = [
+  'page', 'p', 'pg', 'offset', 'start', 'from', 'after', 'before', 'cursor',
+  'filefrom', 'pagefrom', 'continue', 'skip',
+];
+
 export const EXPLORE_LIMITS = {
-  /** Scroll steps per page before giving up on an infinite feed. */
-  MAX_SCROLL_STEPS: 40,
+  /**
+   * Scroll steps per page before giving up on an infinite feed. A step is most
+   * of a viewport, so every lazy image on the way down actually intersects;
+   * 120 of them cover a long feed without letting an endless one run forever.
+   */
+  MAX_SCROLL_STEPS: 120,
+  /** Pause after each scroll step, for an IntersectionObserver to fire. */
+  SCROLL_SETTLE_MS: 200,
   /** Clicks per page. A gallery needs many; a runaway loop must still end. */
   MAX_CLICKS: 60,
   /** Pages visited in one crawl. */
@@ -64,7 +76,15 @@ export const EXPLORE_LIMITS = {
   DRY_ROUNDS: 2,
   /** Politeness gap between page navigations. */
   PAGE_DELAY_MS: 1200,
+  /**
+   * Wall-clock budget for one page's click rounds. A page thick with pointer
+   * controls (a wiki, a shop) otherwise spends minutes clicking chrome that
+   * reveals nothing, and the crawl never reaches page two.
+   */
+  MAX_PAGE_MS: 45_000,
 };
+
+import { pathTokens, jaccard } from './url-normalize.js';
 
 function normalise(text) {
   return String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -105,11 +125,32 @@ function matchesAny(haystack, words) {
  * @property {string} [target]
  * @property {boolean} [hasDownloadAttr]
  * @property {boolean} [insideForm]
+ * @property {boolean} [insideLink] the control sits inside an <a href>
  * @property {boolean} [disabled]
  * @property {boolean} [visible]
  * @property {boolean} [containsMedia] the control wraps an img/video
+ * @property {string} [ariaExpanded] 'true' | 'false' | '' (a <summary> reports its <details>)
+ * @property {string} [ariaSelected] for tabs
+ * @property {string} [ariaHasPopup]
+ * @property {boolean} [ariaControls] the control names what it opens
  * @property {number} [area] rendered area in px²
  */
+
+/**
+ * A control whose shape says it opens or expands something it has not opened
+ * yet: a closed `aria-expanded`, a menu button, an unselected tab, a
+ * `<summary>`. Language-independent, which is the point - a tab called
+ * "Specifiche" and an accordion called "Note tecniche" hide images too.
+ */
+export function isDisclosure(el) {
+  const expanded = String(el.ariaExpanded || '');
+  if (expanded === 'true' || String(el.ariaSelected || '') === 'true') return false; // already open
+  if (expanded === 'false') return true;
+  if (el.ariaHasPopup && String(el.ariaHasPopup) !== 'false') return true;
+  if (el.ariaControls) return true;
+  if (String(el.role || '') === 'tab') return true;
+  return String(el.tag || '').toLowerCase() === 'summary';
+}
 
 /**
  * Should the explorer click this element?
@@ -143,10 +184,13 @@ export function shouldClick(el) {
   }
 
   // A link that leaves the page is navigation, handled by the crawl queue —
-  // not by clicking.
+  // not by clicking. The same goes for anything inside one: clicking the span
+  // that wraps a site's logo is clicking the logo's link, and the crawl found
+  // itself on a wiki's front page over and over.
   if (tag === 'a' && el.href && !/^javascript:/i.test(el.href)) {
     return { click: false, reason: 'link — queued for navigation instead' };
   }
+  if (el.insideLink) return { click: false, reason: 'inside a link — navigation, not a control' };
 
   // Positive reason required from here on.
   if (el.containsMedia) return { click: true, reason: 'wraps media — likely opens it larger' };
@@ -156,6 +200,7 @@ export function shouldClick(el) {
   if (['tab', 'button'].includes(String(el.role || '')) && matchesAny(tokens, OPPORTUNITY_WORDS)) {
     return { click: true, reason: 'media control by role' };
   }
+  if (isDisclosure(el)) return { click: true, reason: 'opens or expands something not open yet' };
   return { click: false, reason: 'no positive reason to believe it reveals media' };
 }
 
@@ -191,11 +236,43 @@ export function shouldFollow(href, pageUrl, el) {
       return { follow: false, reason: 'reads as transactional or destructive' };
     }
   }
-  const path = normalise(target.pathname);
-  if (matchesAny(path.replace(/[-_/]+/g, ' '), RISK_WORDS)) {
-    return { follow: false, reason: 'path reads as transactional or destructive' };
+  // The query is part of the address: `index.php?action=edit` is an edit page.
+  const address = normalise(`${target.pathname} ${target.search}`).replace(/[-_/?&=:]+/g, ' ');
+  if (matchesAny(address, RISK_WORDS)) {
+    return { follow: false, reason: 'address reads as transactional or destructive' };
   }
   return { follow: true, reason: 'same origin' };
+}
+
+const dirOf = (pathname) => pathname.slice(0, pathname.lastIndexOf('/') + 1);
+const addressTokens = (u) => pathTokens(`${u.pathname}/${u.search}`.replace(/[?&=:]+/g, '/'));
+
+/**
+ * How much a link looks like a continuation of the page the crawl started on -
+ * the next page of the same gallery, a sub-album, a "more" link - against the
+ * front page, help and account links every page also carries. Higher is
+ * visited sooner; the crawl queue is sorted by it. Pure.
+ *
+ * @param {string} href absolute URL
+ * @param {string} startUrl where the crawl began
+ * @param {object} [el] link description, for its label
+ * @returns {number}
+ */
+export function linkPriority(href, startUrl, el) {
+  let target;
+  let start;
+  try {
+    target = new URL(href, startUrl);
+    start = new URL(startUrl);
+  } catch {
+    return 0;
+  }
+  const likeness = jaccard(addressTokens(start), addressTokens(target));
+  const label = el ? `${accessibleText(el)} ${tokenText(el)}` : '';
+  const continuation = matchesAny(label, OPPORTUNITY_WORDS) ? 0.3 : 0;
+  const paged = [...target.searchParams.keys()].some((k) => PAGINATION_PARAMS.includes(k.toLowerCase())) ? 0.3 : 0;
+  const nearby = dirOf(target.pathname) === dirOf(start.pathname) ? 0.1 : 0;
+  return likeness + continuation + paged + nearby;
 }
 
 /** Strip the fragment: /a#one and /a#two are the same document to a crawler. */

@@ -601,3 +601,295 @@ One bug found and fixed in the same pass: `pageFinished` incremented the page
 counter in memory and then called `stopCrawl`, which re-reads from storage - so
 a finished crawl reported one page fewer than it had visited. The counters are
 now persisted before any branch that stops.
+
+---
+
+# Eighth pass - a real run finds what reading cannot
+
+The panel had been looked at as screenshots and the pipeline reasoned about;
+this pass loaded the unpacked extension into Chrome, pointed it at a page and
+read everything back out of the actual panel. `test/browser/e2e.mjs` is that
+run, kept: 38 assertions, in `npm test`, against a gallery that
+`test/fixtures/gallery-server.mjs` serves from the test process (every image is
+generated noise, so an original is always bigger than its thumbnail and nothing
+binary is committed). Version 0.1.1.
+
+## CI had been red on every run since the first commit
+
+`browser-actions/setup-chrome@v1` installed branded Google Chrome 151 on the
+runner. Branded Chrome 137 and later ignores `--load-extension` without a word,
+so the worker never registered and the smoke test failed exactly the way a real
+regression would. Locally the harness found Chrome for Testing and passed,
+which is why nobody noticed. The workflow now uses `setup-chrome@v2` (Chrome for
+Testing for the channel names) and refuses to continue unless `--version` says
+"for Testing"; the smoke test prints the target list and Chrome's stderr when
+the worker is missing, so the next silent failure explains itself.
+
+## Bugs the run found, all fixed
+
+1. **Any iframe reset the tab and renamed the page.** The content script sent
+   its document_start `PAGE_INFO` from every frame, and the worker treated each
+   as a navigation: an ad or an embed arriving late wiped the index and set
+   `pageUrl` to the frame's URL, so downloads landed under
+   `magpie/host/frame.html/`. Only the top document reports now, and the worker
+   ignores page messages from `frameId > 0` regardless.
+2. **The navigation reset raced the network batch.** The reset came from the
+   page's document_start message, which travels through the renderer; the
+   `webRequest` events come from the browser. Their order is not defined, and
+   in traces the reset landed after the first batch often enough to leave the
+   thumbnails "DOM only". The reset now comes from `chrome.tabs.onUpdated`
+   (`status: loading`), which fires before the new document's first subresource
+   request and shares the worker's event queue with `webRequest`. The message
+   still names the page and resumes a crawl.
+3. **Two messages a few milliseconds apart lost the title and the first
+   candidates.** Page messages and network batches for one tab now run through
+   one serialized chain (`serialize()` in the store), and `getTab` is
+   single-flight so two concurrent cache misses cannot install two different
+   state objects.
+4. **`confirmed` regressed to `referenced` on the second scan.** `mergeStatus`
+   derived status from layers only, so a decoded `<img>`, a canvas or a `data:`
+   image - DOM-only by nature - was talked down on every rescan. Confirmed is
+   now sticky.
+5. **"Done" was never reported.** `finishIfDone` set the flag after the last
+   emit, so the progress line stayed at `12/12 fetched` forever and the sidecar
+   was never written. It emits now. The panel also asked for a sidecar on every
+   download regardless of the option; it now reads `writeSidecar` from options.
+6. **A `data:` image over 4 KB was truncated into a corrupt file.** The
+   sanitizer capped every URL at 4096 characters. A `data:` URL is the file: it
+   is kept whole up to 1 MiB and dropped beyond that, never cut. Unit-tested.
+7. **The wrong frame answered capture and highlight requests.** Both messages
+   reach every frame, and a frame without the element replied "gone" first,
+   winning the race. Only the frame holding the element responds.
+8. **Two fields never survived the sanitizer.** `synthetic` (so every capture
+   was named `inline-svg`, canvases included) and the new `previewUrl`, which
+   lets a link-target original's tile render from its thumbnail instead of
+   pulling the full-size file - measured: zero `GET`s for originals before
+   "find originals", where there had been twelve.
+9. Smaller: media indexed after the page requested a key system now arrives
+   `protected` (only earlier items were being marked); HAR streams no longer get
+   the non-status `stream`; the panel's `IntersectionObserver` is disconnected
+   before each re-render instead of holding every tile ever drawn; pressing
+   rescan on a tab that has no content script (opened before the extension was
+   installed) says to reload the page instead of showing an empty list.
+
+## What the harness taught
+
+- `Browser.setDownloadBehavior` over CDP overrides the extension's own
+  `filename`: every file lands as its URL basename or a GUID, which reads
+  exactly like a broken template. The download directory is set through the
+  profile's `Preferences` instead, and the extension's paths come out as they
+  do in a normal Chrome.
+- Attaching the debugger to the service worker and navigating in the same
+  instant loses the page's `webRequest` events about half the time. Nothing
+  attaches to the worker in normal use; the run waits half a second.
+
+## Verified
+
+- `npm test`: 116 unit tests, smoke test, 38 end-to-end assertions, all green,
+  four consecutive runs with the ordering trace enabled.
+- Live `en.wikipedia.org/wiki/Eurasian_magpie`: 57 items (54 images, 3 audio),
+  13 confirmed by both layers, 23 `/thumb/` URLs; six probed, six upgraded
+  (`500px-…02.jpg` → the 12,070,770-byte original); no console errors.
+
+---
+
+# Ninth pass - review of the eighth, and the flows the gallery never reached
+
+A line-by-line review of the eighth pass found five real problems in it, and a
+second end-to-end run (`test/browser/e2e-flows.mjs`, 41 assertions, in `npm
+test`) went after everything the gallery page could not exercise. Both are
+recorded here; the unit count is now 124.
+
+## What the review found, and what replaced it
+
+1. **`tabs.onUpdated` 'loading' reset the index for loads that never replaced
+   the document.** A download link served as an attachment, a 204, a stopped
+   load: each fires 'loading' and then 'complete' on a tab whose page - and
+   content script - are still there. The eighth pass wiped the index on every
+   one of them. The reset is now in **two steps**. 'loading' opens a new
+   *generation* and removes nothing; every item carries the generation it was
+   indexed under. The page's own document_start report retires only the
+   generations before the pending one, so a network batch that arrived first
+   is kept whichever order the two came in - which was the whole point of the
+   change. 'complete' settles: if the URL never changed, nothing happens; if it
+   changed and, after a 1.5 s grace, no page ever reported (chrome://, a PDF,
+   the Web Store), the tab is reset then. A `pushState` completes in the same
+   instant it starts and its own report follows within the grace, which is why
+   the grace exists.
+2. **A reset that found nothing live emptied the history.** `resetTab` only
+   carried `history` forward when there were live items to add to it; a
+   redirect hop or a `replaceState` on load - two resets in a row - dropped
+   everything collected on earlier pages. History is now carried regardless.
+3. **The DRM flag died on a route change.** `emeRequested` is set once, when the
+   player asks for a key system; an SPA moving to the next title with
+   `pushState` rebuilt the state from scratch, and the next title's segments
+   arrived downloadable. A same-document reset now keeps the DRM and MSE flags
+   (`keepFlags`); a real navigation still clears them.
+4. **`previewUrl` could be a lazy loader's placeholder.** The link-target
+   original took its preview from the `<img>` `src` of the moment, which on a
+   lazy gallery is a 1x1 `data:` placeholder, and the store kept the first
+   value forever. A preview is now only ever an `http(s)` URL, the newest scan
+   wins, and a tile whose preview fails falls back to the file itself once.
+5. **A malformed `data:` URL took the whole batch down.** `fetch()` on it
+   rejected out of `downloadItems`, so the remaining captures and the entire
+   network queue were never started, silently. Each local save now fails on
+   its own and is counted in the progress line.
+
+Also from the review: the "reload the page" hint stayed on screen after the
+reload had worked (it clears itself once items arrive, and on a tab switch);
+the network observer flushed one tab's batch after another so a slow tab held
+the rest (tabs now merge in parallel; order matters only within a tab); and a
+tab could hold an unbounded number of inline `data:` images inside the
+10 MB session-storage quota, where one failed write loses the whole index. A
+tab now holds at most 3 MiB of `data:` URLs (`DATA_URI_TAB_BUDGET`), reports
+itself truncated past that, and a failed write is an error in the console
+rather than a debug line. The CI job has a 15-minute timeout and the runs
+release the fixture server whichever step throws, so a hung browser cannot
+hold a runner for six hours.
+
+The store's reset semantics are now unit-tested (`test/store.test.mjs`, with
+an in-memory `chrome.storage`): a batch arriving before the page's report is
+kept, two resets in a row keep the history, a settled load changes nothing, an
+orphaned one is flagged, the DRM flag survives a route change and not a
+navigation, and the `data:` budget refuses and frees as it should.
+
+## The second run
+
+- **Layer B is real.** Five image URLs named only inside fetch and XHR JSON
+  bodies were indexed as `background` from the MAIN world, with no DOM and
+  without a single request for them; the API endpoints themselves were not.
+- **Streams end to end.** A manifest fetched by the page was indexed as a
+  stream; the drawer listed its three variants with resolutions, generated
+  both commands, and "export segment list" wrote the 1080p variant's three
+  segments to a file.
+- **DRM.** The key-system request marked the video and the stream `protected`,
+  left images alone, and a video added afterwards arrived protected. The flag
+  survived a `pushState`.
+- **A route change** moved the previous route's items to history, kept them
+  retrievable, and indexed the new route's images with both DOM and network
+  evidence - the ordering the generation reset exists for.
+- **A worker restart** (`ServiceWorker.stopAllWorkers` from the panel's page
+  session, the target seen to disappear) lost nothing: same items, same title,
+  same flag, from `chrome.storage.session`.
+- **The explorer** walked two pages: revealed four images behind "Mostra altre
+  foto", opened the lightbox, followed "Pagina 2" and kept one index across the
+  hop, and touched none of six traps - two destructive buttons, an upload
+  button, a form-shaped "Mostra altre foto", an "Esci" link and a `download`
+  link - each of which would have recorded a hit on the server.
+- **HAR import** through the real file input: four entries merged, three with
+  bodies; the download wrote the three files with their exact bytes from a
+  host that does not exist (`127.0.0.1:1`) while the one exported without a
+  body failed over the network as it should, and the progress line said
+  `3 saved locally · 0/1 fetched, 1 failed`.
+- **The panel's controls**: `a` selects the focused group, `Escape` clears,
+  "select similar to this" takes the grid, and the threshold and template
+  persist as options.
+
+## Verified
+
+`npm test`: 124 unit tests, the smoke test, 37 + 41 end-to-end assertions,
+all green, two consecutive runs. Still not verified: a HAR exported by DevTools
+itself, the explorer on a third-party site, the context menu driven
+mechanically, Arc, Dia, Brave, Edge.
+
+---
+
+# Tenth pass - the explorer against a real site
+
+Asked directly whether the explorer could walk a site and make every image
+load, the answer had to be measured. Wikimedia Commons (`Category:Pica_pica`)
+was the only public site that let a headless Chrome for Testing in; Pixabay,
+Unsplash and Openverse answered 403 from a bot wall before a page loaded, so
+infinite-scroll sites behind such walls stay unverified here. Each run below is
+150 s, stopped by the probe.
+
+## What the first run found
+
+1. **Scrolling jumped to the bottom.** `scrollThrough` scrolled to the page's
+   full height on each step, so an image or "load more" sentinel that only
+   loads when it intersects the viewport never did unless it sat at the end.
+   Fixture: 0 of 12 lazy images. It now moves by 85% of a viewport per step,
+   through the window and any pane that scrolls on its own, and follows a feed
+   that grows at the bottom until it stops growing. 12 of 12. On Commons the
+   first scroll alone took the page from 414 to 632 items.
+2. **The crawl never left page one**: 0 pages after 100 s, and the tab was on
+   the front page - repeatedly. The span wrapping the site logo wraps an image,
+   which is a positive reason to click; its `<a>` went to `Main_Page`; there the
+   same click happened again. A page reached by a stray navigation was being
+   explored without being counted, so nothing ever ended it. Two rules:
+   anything inside an `<a href>` is the link and is refused like one (the link
+   itself is collected for the queue), and a page the tab lands on by itself
+   is visited once - recorded, explored, counted - and never twice.
+3. **Click rounds had no clock.** A page thick with pointer controls (a wiki)
+   spends its 60 clicks on chrome that reveals nothing, each round followed by
+   a full re-scroll. Rounds now have a 45 s budget per page, and the re-scroll
+   happens only when a round changed the page's height or media count.
+4. **The queue was blind.** With links followed in discovery order, the 40-page
+   budget went to `Main_Page`, `Commons:Welcome`, `Village_pump`,
+   `Special:RecentChanges`, `Special:Random/File`, an `action=edit` page. Links
+   are now scored by likeness to the start page - shared address tokens
+   (Jaccard over path and query), a pagination parameter, a "next"/"more"
+   label - and visited highest first; the risk-word check covers the query, so
+   `?action=edit` is refused like `/edit`. Same start, next run: `Category:Pica`,
+   `Videos_of_Pica_pica`, `Quality_images_of_Pica_pica`, then the
+   subcategories (anatomy, captive, eggs, illustrations, juvenile, nests).
+5. **A route change during a crawl reset the crawl.** MediaWiki calls
+   `replaceState` on load; the `PAGE_RESET` that follows moved each page's
+   finds to history at every hop (`items 812 → 9, history 812`). A crawl keeps
+   one index; the same-document reset is skipped while one runs.
+
+## Storage, measured
+
+With one index across thirteen pages, `chrome.storage.session` refused writes
+at 2.9 MB of JSON. `QUOTA_BYTES` is 10,485,760 and single 8 MB values write
+fine; `getBytesInUse` explained it - the quota charges the in-memory size of
+the value tree, ~3x the JSON, and an item's structural path (sixteen
+`{tag, classes[]}` nodes) plus its class-count map were most of its objects.
+
+- The store now keeps both as strings - one per path node, one per map - and
+  expands them on read (`packItem`/`unpackItem`, tolerant of the expanded
+  shape for seeded states). Same 2,028 items: 7.3 MB charged instead of the
+  8.4 MB that 1,404 had cost. Path depth and class caps also came down
+  (16 nodes, 8 classes, 32 counts) from a measured 14.5-level average.
+- Writes are single-flight per tab: a change during a multi-megabyte write is
+  flushed once, after it, instead of piling overlapping writes of one key.
+- If a write still fails: history is dropped first (it travels light anyway -
+  no structure), then live items lose their structure (`trimmed`), and the
+  panel's banner says which happened; the URLs and statuses always survive a
+  worker restart. The browser's message is kept on the state.
+
+## Verified
+
+- Fixture: 41 → 44 flow assertions (lazy feed 12/12, logo-in-a-link not
+  clicked, page 1 loaded exactly once); 129 unit tests (link priority,
+  query-aware risk, compact round trip, single-flight flush).
+- Commons, 150 s: 13 pages, 67 clicks, 2,028 items (1,698 images, 166 videos,
+  164 audio), subcategories first, no trap, no loop, no trimming, no console
+  error of Magpie's own.
+- One harness lesson worth keeping: a tab behind the panel's tab is hidden,
+  and a hidden tab has its timers clamped to one a second and its
+  IntersectionObservers never fire. That masked the scroll result entirely;
+  every test page now opens in its own window, which is how the tab a person
+  is looking at behaves.
+
+---
+
+# Eleventh pass - what hides behind a control that does not talk about media
+
+Asked whether images behind menus get found, the answer had two halves.
+Images that are in the DOM but hidden - `display: none`, `[hidden]`, a closed
+menu drawn with CSS - were already indexed and fetched without a click: the
+scanner reads the DOM, not the screen. Images the page renders only when a
+control is operated were found only if the control's label or class read as a
+media control. A tab called "Specifiche", an accordion called "Note tecniche",
+a button called "Menu" and a `<details>` called "Materiali" were not opened:
+measured on a fixture built for it, 0 of 4, 0 of 2, 0 of 2, 0 of 1.
+
+`isDisclosure()` adds a third positive reason, shape rather than words: a
+closed `aria-expanded="false"`, an `aria-haspopup`, an `aria-controls`, an
+unselected `role="tab"`, a `<summary>` whose `<details>` is closed. An open one
+is not clicked (that would close it), and the risk words still veto - the
+fixture's "Elimina raccolta" disclosure records a server hit if touched, and
+did not. The content script reports the four attributes and lets an element
+that carries them afford a click even without a pointer cursor. After the
+change: 4/4, 2/2, 2/2, 1/1, all fetched, trap untouched. Unit-tested.

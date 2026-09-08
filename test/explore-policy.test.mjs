@@ -10,6 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  linkPriority,
   shouldClick, shouldFollow, crawlKey, accessibleText,
   RISK_WORDS, OPPORTUNITY_WORDS, EXPLORE_LIMITS,
 } from '../src/core/explore-policy.js';
@@ -154,4 +155,43 @@ test('no word appears in both lists, which would make the outcome arbitrary', ()
   const risky = new Set(RISK_WORDS);
   const overlap = OPPORTUNITY_WORDS.filter((w) => risky.has(w));
   assert.deepEqual(overlap, [], `overlapping: ${overlap.join(', ')}`);
+});
+
+test('a control inside a link is the link, and is left to the crawl queue', () => {
+  // The span wrapping a site logo wraps an image, which is otherwise a
+  // positive reason to click - and its <a> goes to the front page.
+  const { click, reason } = shouldClick(el({ tag: 'span', containsMedia: true, insideLink: true }));
+  assert.equal(click, false);
+  assert.match(reason, /inside a link/);
+  assert.equal(shouldClick(el({ tag: 'span', text: 'show more photos', insideLink: true })).click, false);
+  assert.equal(shouldClick(el({ tag: 'span', containsMedia: true, insideLink: false })).click, true);
+});
+
+test('a link whose query is an action is refused as its path would be', () => {
+  const page = 'https://wiki.example.org/wiki/Category:Birds';
+  assert.equal(shouldFollow('https://wiki.example.org/w/index.php?title=Category_talk:Birds&action=edit', page).follow, false);
+  assert.equal(shouldFollow('https://wiki.example.org/w/index.php?title=Category:Birds&oldid=5', page).follow, true);
+});
+
+test('links most like the start page are visited first', () => {
+  const start = 'https://wiki.example.org/wiki/Category:Pica_pica';
+  const nextPage = linkPriority('https://wiki.example.org/w/index.php?title=Category:Pica_pica&filefrom=Z', start, { text: 'next page' });
+  const subAlbum = linkPriority('https://wiki.example.org/wiki/Category:Pica_pica_in_art', start, { text: 'Pica pica in art' });
+  const frontPage = linkPriority('https://wiki.example.org/wiki/Main_Page', start, { text: 'Main page' });
+  const help = linkPriority('https://wiki.example.org/wiki/Help:Contents', start, { text: 'Help' });
+  const random = linkPriority('https://wiki.example.org/wiki/Special:Random/File', start, { text: 'Random file' });
+  assert.ok(subAlbum > frontPage && nextPage > frontPage, `sub ${subAlbum} next ${nextPage} front ${frontPage}`);
+  assert.ok(subAlbum > help && nextPage > help && frontPage >= random, `help ${help} random ${random}`);
+  assert.equal(linkPriority('/wiki/X', 'not a url'), 0); // no start page to compare against
+});
+
+test('a closed disclosure is opened whatever it is called; an open or risky one is not', () => {
+  assert.equal(shouldClick(el({ text: 'Specifiche', role: 'tab', ariaSelected: 'false' })).click, true);
+  assert.equal(shouldClick(el({ text: 'Panoramica', role: 'tab', ariaSelected: 'true' })).click, false, 'already selected');
+  assert.equal(shouldClick(el({ text: 'Note tecniche', ariaExpanded: 'false', ariaControls: true })).click, true);
+  assert.equal(shouldClick(el({ text: 'Note tecniche', ariaExpanded: 'true', ariaControls: true })).click, false, 'already open');
+  assert.equal(shouldClick(el({ tag: 'summary', text: 'Materiali', ariaExpanded: 'false' })).click, true);
+  assert.equal(shouldClick(el({ text: 'Menu', ariaHasPopup: 'true' })).click, true);
+  assert.equal(shouldClick(el({ text: 'Elimina raccolta', ariaExpanded: 'false', ariaControls: true })).click, false, 'risk words win');
+  assert.equal(shouldClick(el({ text: 'Xyzzy' })).click, false, 'a plain button still needs a reason');
 });

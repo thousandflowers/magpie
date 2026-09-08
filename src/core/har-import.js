@@ -124,7 +124,7 @@ export function parseHar(har, opts = {}) {
       kind,
       bytes: bytes > 0 ? bytes : null,
       source: 'har',
-      status: kind === 'stream' ? 'stream' : 'background',
+      status: 'background',
       pageUrl: (entry && entry.pageref) || '',
       timestamp: Date.parse((entry && entry.startedDateTime) || '') || 0,
       initiator: headerValue(req.headers, 'referer'),

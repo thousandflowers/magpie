@@ -25,6 +25,11 @@
   const MAX_ELEMENTS = 3000;
   const MAX_CANDIDATES = 120;
   const MAX_LINKS = 400;
+  /** How much of a viewport one scroll step moves: overlap, so nothing falls between steps. */
+  const SCROLL_FRACTION = 0.85;
+  /** Inner scrollers considered besides the window (an app shell, a feed in a pane). */
+  const MAX_SCROLLERS = 4;
+  const MIN_SCROLLER_PX = 200;
 
   let running = false;
   let stopRequested = false;
@@ -66,6 +71,7 @@
       const role = (el.getAttribute('role') || '').toLowerCase();
       let affords = tag === 'button' || tag === 'summary' || role === 'button' || role === 'tab';
       if (!affords && el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1') affords = true;
+      if (!affords && (el.hasAttribute('aria-expanded') || el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-controls'))) affords = true;
 
       let rect;
       let style;
@@ -96,6 +102,14 @@
           target: el.getAttribute('target') || '',
           hasDownloadAttr: el.hasAttribute('download'),
           insideForm: Boolean(el.closest && el.closest('form')),
+          insideLink: Boolean(el.closest && el.closest('a[href]')),
+          // The shape of a disclosure: what it says it opens, and whether it already has.
+          ariaExpanded: tag === 'summary'
+            ? String(Boolean(el.parentElement && el.parentElement.open))
+            : (el.getAttribute('aria-expanded') || ''),
+          ariaSelected: el.getAttribute('aria-selected') || '',
+          ariaHasPopup: el.getAttribute('aria-haspopup') || '',
+          ariaControls: Boolean(el.getAttribute('aria-controls')),
           disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
           visible: true,
           containsMedia: Boolean(el.querySelector && el.querySelector('img, video, picture, canvas')),
@@ -127,21 +141,66 @@
     return links;
   }
 
-  /** Scroll to the bottom in steps, so lazy loaders and feeds actually fire. */
-  async function scrollThrough(limits) {
-    let previousHeight = -1;
-    for (let step = 0; step < limits.MAX_SCROLL_STEPS; step += 1) {
-      if (stopRequested) return step;
-      const height = document.documentElement.scrollHeight;
-      window.scrollTo({ top: height, behavior: 'auto' });
-      await sleep(limits.SETTLE_MS);
-      if (height === previousHeight && step > 1) break; // nothing new is loading
-      previousHeight = height;
+  /** The window, plus any element that scrolls on its own: an app shell, a feed in a pane. */
+  function scrollTargets() {
+    const targets = [window];
+    let visited = 0;
+    for (const el of document.querySelectorAll('*')) {
+      if (visited++ > MAX_ELEMENTS || targets.length > MAX_SCROLLERS) break;
+      if (el.clientHeight < MIN_SCROLLER_PX || el.scrollHeight <= el.clientHeight + MIN_SCROLLER_PX) continue;
+      const overflow = getComputedStyle(el).overflowY;
+      if (overflow === 'auto' || overflow === 'scroll') targets.push(el);
     }
-    // Back to the top so the next round sees the whole page again.
-    window.scrollTo({ top: 0, behavior: 'auto' });
+    return targets;
+  }
+
+  function metrics(target) {
+    if (target === window) {
+      return { top: window.scrollY, height: document.documentElement.scrollHeight, viewport: window.innerHeight };
+    }
+    return { top: target.scrollTop, height: target.scrollHeight, viewport: target.clientHeight };
+  }
+
+  function scrollTo(target, top) {
+    if (target === window) window.scrollTo({ top, behavior: 'auto' });
+    else target.scrollTop = top;
+  }
+
+  /**
+   * Scroll through in viewport-sized steps, so every lazy image and every
+   * IntersectionObserver sentinel on the way down actually intersects. Jumping
+   * straight to the bottom loads only what happens to sit there - measured:
+   * 0 of 12 lazy images on the fixture feed, against 12 of 12 this way.
+   * A feed that grows while at the bottom is followed until it stops growing
+   * or the step budget runs out.
+   */
+  async function scrollThrough(limits) {
+    const settle = limits.SCROLL_SETTLE_MS || 200;
+    let steps = 0;
+    for (const target of scrollTargets()) {
+      let lastHeight = -1;
+      while (steps < limits.MAX_SCROLL_STEPS && !stopRequested) {
+        const before = metrics(target);
+        scrollTo(target, before.top + before.viewport * SCROLL_FRACTION);
+        steps += 1;
+        await sleep(settle);
+        const after = metrics(target);
+        if (after.top + after.viewport < after.height - 2) continue; // not at the bottom yet
+        await sleep(limits.SETTLE_MS); // at the bottom: give a feed time to append
+        const height = metrics(target).height;
+        if (height === lastHeight) break; // nothing new is loading
+        lastHeight = height;
+      }
+      // Back to the top so the next round sees the whole page again.
+      scrollTo(target, 0);
+    }
     await sleep(120);
-    return limits.MAX_SCROLL_STEPS;
+    return steps;
+  }
+
+  /** What a click round could have changed: the page's height, or its media. */
+  function pageSignature() {
+    return `${document.documentElement.scrollHeight}:${document.querySelectorAll('img, video, picture, canvas').length}`;
   }
 
   async function explorePage(limits) {
@@ -149,10 +208,12 @@
     stopRequested = false;
     let clicks = 0;
     let dry = 0;
+    const deadline = Date.now() + (limits.MAX_PAGE_MS || 45_000);
 
     const scrolled = await scrollThrough(limits);
 
-    while (clicks < limits.MAX_CLICKS && dry < limits.DRY_ROUNDS && !stopRequested) {
+    while (clicks < limits.MAX_CLICKS && dry < limits.DRY_ROUNDS && !stopRequested && Date.now() < deadline) {
+      const before = pageSignature();
       const candidates = collectCandidates();
       if (!candidates.length) break;
 
@@ -168,7 +229,7 @@
       dry = 0;
 
       for (const index of approved) {
-        if (stopRequested || clicks >= limits.MAX_CLICKS) break;
+        if (stopRequested || clicks >= limits.MAX_CLICKS || Date.now() >= deadline) break;
         const target = candidates[index];
         if (!target || !target.el.isConnected) continue;
         try {
@@ -180,8 +241,9 @@
         }
         await sleep(limits.SETTLE_MS);
       }
-      // Newly revealed content may itself be lazy.
-      await scrollThrough(limits);
+      // Newly revealed content may itself be lazy - but only re-scroll when
+      // the round actually revealed something; a full pass costs seconds.
+      if (pageSignature() !== before) await scrollThrough(limits);
     }
 
     const links = collectLinks();

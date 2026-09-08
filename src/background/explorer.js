@@ -10,7 +10,7 @@
  */
 
 import {
-  shouldClick, shouldFollow, crawlKey, EXPLORE_LIMITS,
+  shouldClick, shouldFollow, linkPriority, crawlKey, EXPLORE_LIMITS,
 } from '../core/explore-policy.js';
 import { sendToTab } from '../shared/messages.js';
 import { log, warn } from '../shared/debug.js';
@@ -107,12 +107,19 @@ export function judgeCandidates(candidates) {
   return { click, refused };
 }
 
-/** Queue the same-origin links a page offered. */
+const urlOf = (entry) => (typeof entry === 'string' ? entry : entry.url);
+
+/**
+ * Queue the same-origin links a page offered, most like the start page first.
+ * On a wiki every page carries a hundred links to the front page, help and
+ * account pages; a 40-page budget spent there finds nothing. The next page of
+ * the same gallery and its sub-albums score higher and are visited first.
+ */
 export async function acceptLinks(tabId, links, pageUrl) {
   const crawl = await readCrawl(tabId);
   if (!crawl || !crawl.running) return { queued: 0 };
   const visited = new Set(crawl.visited);
-  const queued = new Set(crawl.queue);
+  const queued = new Set(crawl.queue.map(urlOf));
   let added = 0;
 
   for (const link of Array.isArray(links) ? links.slice(0, 500) : []) {
@@ -122,10 +129,14 @@ export async function acceptLinks(tabId, links, pageUrl) {
     const key = crawlKey(href, pageUrl);
     if (!key || visited.has(key) || queued.has(key)) continue;
     queued.add(key);
-    crawl.queue.push(key);
+    crawl.queue.push({ url: key, score: linkPriority(key, crawl.startUrl, link) });
     added += 1;
   }
-  if (added) await writeCrawl(tabId, crawl);
+  if (added) {
+    // Stable: equal scores keep discovery order.
+    crawl.queue.sort((a, b) => (b.score || 0) - (a.score || 0));
+    await writeCrawl(tabId, crawl);
+  }
   return { queued: added };
 }
 
@@ -134,7 +145,7 @@ export async function pageFinished(tabId, result) {
   const crawl = await readCrawl(tabId);
   if (!crawl || !crawl.running) return null;
 
-  crawl.pages += 1;
+  if (!(result && result.skipped)) crawl.pages += 1;
   crawl.clicks += Number(result && result.clicks) || 0;
   // Persist the counters before any branch that stops: stopCrawl re-reads from
   // storage, so an unwritten increment would be reported as one page short.
@@ -145,8 +156,9 @@ export async function pageFinished(tabId, result) {
     return stopCrawl(tabId, `page limit reached (${EXPLORE_LIMITS.MAX_PAGES})`);
   }
 
-  const next = crawl.queue.shift();
-  if (!next) return stopCrawl(tabId, 'nothing left to visit');
+  const entry = crawl.queue.shift();
+  if (!entry) return stopCrawl(tabId, 'nothing left to visit');
+  const next = urlOf(entry);
 
   crawl.visited.push(next);
   crawl.currentUrl = next;
@@ -166,10 +178,27 @@ export async function pageFinished(tabId, result) {
   return still;
 }
 
-/** Called when a page reports in after a crawl-driven navigation. */
-export async function resumeAfterNavigation(tabId) {
+/**
+ * Called when a page reports in during a crawl. Usually it is the page the
+ * crawl navigated to; sometimes the tab went somewhere on its own - a click
+ * that turned out to be a link, a redirect. That page is explored once, like
+ * any other, and a page already visited is not explored again: re-exploring
+ * it is how a logo click became an endless loop through a wiki's front page.
+ */
+export async function resumeAfterNavigation(tabId, url) {
   const crawl = await readCrawl(tabId);
   if (!crawl || !crawl.running) return false;
+  const key = crawlKey(url, url);
+  if (key && key !== crawl.currentUrl) {
+    if (crawl.visited.includes(key)) {
+      log('crawl landed on a visited page, moving on', key);
+      await pageFinished(tabId, { clicks: 0, skipped: true });
+      return true;
+    }
+    crawl.visited.push(key);
+    crawl.currentUrl = key;
+    await writeCrawl(tabId, crawl);
+  }
   await sendToTab(tabId, { type: EXPLORE_MSG.PAGE, limits: EXPLORE_LIMITS });
   return true;
 }

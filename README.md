@@ -57,16 +57,34 @@ Chrome 120+. Loads unchanged in Arc, Dia, Brave and Edge; without
 `chrome.sidePanel` the panel opens in a popup window instead.
 
 ```sh
-npm test           # 112 unit tests, then a service-worker smoke test in Chrome
+npm test           # unit tests, the service-worker smoke test, then both end-to-end runs
 npm run test:unit  # unit tests only, no browser needed
+npm run test:e2e   # the extension against a local gallery in a real Chrome
+npm run test:flows # SPA feeds, a stream, DRM, a route change, a worker restart, the explorer, HAR import
 npm run test:dash  # DRM boundary checked in the real panel (18 assertions)
+npm run gallery    # serve the fixture site on :8765 to try the extension by hand
 npm run screenshots
 ```
 
 `package.json` declares no dependencies. The browser checks look for a Chromium
 (`CHROME_PATH` points at one) and skip with a notice if none is found - except
-under `CI`, where the smoke test fails instead of skipping, because skipping is
-how a dead service worker goes unnoticed.
+under `CI`, where they fail instead of skipping, because skipping is how a dead
+service worker goes unnoticed. CI installs **Chrome for Testing** on purpose:
+branded Google Chrome 137 and later ignores `--load-extension` without a word,
+and the workflow refuses to continue on a branded build.
+
+The end-to-end runs serve a small site from the test process and load the
+unpacked extension in Chrome. The first is a gallery - thumbnails linking to
+originals, a hero, a toolbar of icons, a lazy section, an iframe that arrives
+late, a painted canvas and an inline `data:` image - read back out of the real
+panel: what was indexed and by which layers, how it clustered, that "find
+originals" proved the full-size files with `HEAD` alone, and that the download
+wrote every original's exact bytes under the templated name. The second walks
+the flows a gallery does not reach: media that exists only in a JSON feed, an
+HLS manifest fetched the way a player fetches it, a key-system request, a
+`pushState` route change, a service-worker restart, the explorer crossing two
+pages past four traps, a HAR import saved with no network, and the panel's own
+keys and options. Nothing in either run leaves the machine.
 
 ---
 
@@ -76,7 +94,7 @@ how a dead service worker goes unnoticed.
 |---|---|
 | `webRequest` | Layer A, **listener mode only** - never blocks, redirects or rewrites. Hence no `webRequestBlocking`, no `declarativeNetRequest`. |
 | `downloads` | The point. Every download starts from an explicit click. |
-| `storage` | Per-tab index in `chrome.storage.session` (an MV3 worker restart loses nothing), options in `chrome.storage.local`. Nothing leaves the machine. |
+| `storage` | Per-tab index in `chrome.storage.session` (an MV3 worker restart loses nothing), options in `chrome.storage.local`. Nothing leaves the machine. Session storage is 10 MB for the whole extension and charges about twice an item's JSON, so structure is stored compactly; past the limit the panel says what was dropped (history first, then per-item structure) rather than losing the index. |
 | `contextMenus` | The right-click entry points, including two-click "download all similar". |
 | `notifications` | Reports what a context-menu download queued, since that path never opens the panel. |
 | `sidePanel` | The panel. |
@@ -149,19 +167,36 @@ is how you get at photos that only exist after a "load more", a lightbox, or a
 second page.
 
 Scrolling and following links are GET-shaped and reversible, so they are
-exhaustive. **Clicking is not**, and it is governed differently: on an app where
+exhaustive - but not blind: links are visited most-like-the-start-page first
+(shared path words, a pagination parameter, a "next" or "more" label), so a
+gallery's next page and its sub-albums come before the front page, help and
+account links every page also carries. **Clicking is not**, and it is governed
+differently: on an app where
 you are signed in, an indiscriminate clicker eventually hits "Delete", "Pay" or
-"Log out". A click therefore needs a positive reason - the control either wraps
-media or reads as a media control - and everything else is refused. Form
+"Log out". A click therefore needs a positive reason - the control wraps media,
+reads as a media control, or has the shape of something that opens: a closed
+`aria-expanded`, a menu button, an unselected tab, a `<summary>`. That last
+reason is language-independent on purpose, because a tab called "Specifiche" and
+an accordion called "Note tecniche" hide images too. Everything else is refused.
+Images that are already in the page but hidden - a closed menu drawn with CSS -
+need no click at all: the scanner indexes the DOM, not the screen. Form
 controls, anything inside a `<form>`, submit buttons, `download` attributes,
 `target="_blank"` and any label or class matching the transactional/destructive
-list are refused whatever else they look like. A link is never clicked; it is
-queued for navigation, where the same list is applied to the path, because
-`/logout` is a GET on most sites.
+list are refused whatever else they look like. A link is never clicked, and
+neither is anything inside one - the span wrapping a site's logo wraps an
+image, and clicking it is clicking the link. Links are queued for navigation
+instead, where the same list is applied to the path and the query, because
+`/logout` is a GET on most sites and `?action=edit` is an edit page. A page
+the tab reaches on its own is explored once like any other, never twice.
 
-Bounded by construction: 40 pages, 60 clicks and 40 scroll steps per page, a
-1.2 s gap between navigations, and a stop that reaches both the queue and the
-page. The rules live in `src/core/explore-policy.js` and are tested against a
+Scrolling moves by most of a viewport at a time - through the window and
+through any pane that scrolls on its own - so every lazy image and every
+"load more" sentinel on the way down actually intersects; jumping straight to
+the bottom would load only what sits there.
+
+Bounded by construction: 40 pages, 60 clicks, 120 scroll steps and 45 s of
+click rounds per page, a 1.2 s gap between navigations, and a stop that reaches
+both the queue and the page. The rules live in `src/core/explore-policy.js` and are tested against a
 set of traps.
 
 ## DRM - a hard boundary
@@ -203,12 +238,13 @@ it.
 Stated plainly rather than implied by silence:
 
 - **Arc, Dia, Brave and Edge have not been launched.** Nothing Chrome-only is used beyond `chrome.sidePanel`, which has a popup fallback, but that is an argument, not a test.
-- **The panel has been reviewed as screenshots, not used.** Nobody has driven it interactively for a long session; keyboard flow, scroll behaviour under load and hover states are unproven in practice.
+- **The panel has been driven by a script, not by a person.** The end-to-end run selects a group, presses download, reads the progress line and checks the files; nobody has used it interactively for a long session, so keyboard flow, scroll behaviour under load and hover states are unproven in practice.
 - **HAR import is tested against a synthetic HAR** - built from real image files, and proven to save them with the web server stopped, but not against an archive exported by DevTools itself.
-- **The explorer has only met a fixture app.** Two pages, four deliberate traps, everything on localhost. It has never walked a real third-party site, where the shapes are messier and the throttling is real.
+- **The explorer has walked one real site.** A Wikimedia Commons category, headless: 18 pages in 150 s, subcategories and the videos/quality-images categories first, 1,800+ items, no trap touched, no loop. Pixabay, Unsplash and Openverse refused the headless browser (403) before it saw a page, so infinite-scroll sites behind bot protection remain unverified, as does any site where you are signed in.
 - **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests, a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel - not against Netflix or Spotify.
 - **No DASH manifest has been fetched from a live CDN.** HLS has (Apple's public test stream, downloaded for real with the generated command).
 - **The 122-item bulk download was measured once**, on localhost. Behaviour against a rate-limiting CDN rests on the retry/backoff code, which has not met a real 429.
+- **The context menu has not been driven mechanically.** Its two-click path shares the download queue and the similarity engine with the panel, both of which the end-to-end run exercises, but no test right-clicks an image.
 
 ---
 

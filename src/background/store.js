@@ -8,9 +8,9 @@
  */
 
 import { normalizeUrl } from '../core/url-normalize.js';
-import { classify, rejectionReason, FILTER_CONFIG } from '../core/media-types.js';
+import { classify, rejectionReason, isDataUri, FILTER_CONFIG } from '../core/media-types.js';
 import { SOURCE, STATUS, STATUS_RANK } from '../shared/messages.js';
-import { log, warn } from '../shared/debug.js';
+import { log, warn, error } from '../shared/debug.js';
 
 const KEY_PREFIX = 'tab:';
 const OPTIONS_KEY = 'options';
@@ -18,8 +18,32 @@ const FLUSH_DELAY_MS = 300;
 
 /** @type {Map<number, object>} */
 const cache = new Map();
+/** @type {Map<number, Promise<object>>} tabId -> a storage read already in flight */
+const loading = new Map();
 /** @type {Map<number, ReturnType<typeof setTimeout>>} */
 const pendingFlush = new Map();
+/** @type {Map<number, Promise<void>>} tabId -> a write to session storage still in flight */
+const inflight = new Map();
+/** Tabs that changed again while their write was in flight. */
+const dirty = new Set();
+/** @type {Map<number, Promise<unknown>>} tabId -> tail of its mutation chain */
+const chains = new Map();
+
+/**
+ * Run `fn` after every earlier serialized operation on this tab.
+ *
+ * A page's own messages (reset, page info, DOM candidates) and the network
+ * observer's batches all pass through here, so they are applied in the order
+ * they happened rather than the order their awaits resolved. Without it the
+ * document_start reset could land after the title, after the first DOM scan,
+ * or after the first network batch - and wipe them.
+ */
+export function serialize(tabId, fn) {
+  const previous = chains.get(tabId) || Promise.resolve();
+  const next = previous.then(fn, fn);
+  chains.set(tabId, next.catch(() => {}));
+  return next;
+}
 
 export const DEFAULT_OPTIONS = {
   threshold: 'balanced',
@@ -50,6 +74,21 @@ function emptyTab(tabId) {
     usesMse: false,
     emeRequested: false,
     truncated: false,
+    /**
+     * Navigation generation. Bumped when a navigation starts; every item
+     * carries the generation it was indexed under, so a reset can retire the
+     * previous document's items and keep the ones that already belong to the
+     * new one, whichever order the two arrived in.
+     */
+    gen: 0,
+    /** The generation a started navigation is waiting to settle, or null. */
+    pendingGen: null,
+    /** data: URL characters held, against FILTER_CONFIG.DATA_URI_TAB_BUDGET. */
+    dataBytes: 0,
+    /** Set when the session history had to be dropped to fit in storage. */
+    historyTruncated: false,
+    /** Set when live items lost their structure to fit in storage. */
+    trimmed: false,
     updatedAt: 0,
   };
 }
@@ -81,17 +120,28 @@ export async function setOptions(patch) {
 /** @returns {Promise<object>} never null — an unknown tab gets a fresh state. */
 export async function getTab(tabId) {
   if (cache.has(tabId)) return cache.get(tabId);
-  let state = null;
+  if (loading.has(tabId)) return loading.get(tabId);
+  const read = (async () => {
+    let state = null;
+    try {
+      const stored = await chrome.storage.session.get(key(tabId));
+      state = stored[key(tabId)] || null;
+    } catch (err) {
+      warn('session read failed', err);
+    }
+    if (!state || typeof state !== 'object' || !state.items) state = emptyTab(tabId);
+    state.tabId = tabId;
+    // A reset may have installed a newer state while this read was in flight;
+    // two concurrent callers must end up holding the same object.
+    if (!cache.has(tabId)) cache.set(tabId, state);
+    return cache.get(tabId);
+  })();
+  loading.set(tabId, read);
   try {
-    const stored = await chrome.storage.session.get(key(tabId));
-    state = stored[key(tabId)] || null;
-  } catch (err) {
-    warn('session read failed', err);
+    return await read;
+  } finally {
+    loading.delete(tabId);
   }
-  if (!state || typeof state !== 'object' || !state.items) state = emptyTab(tabId);
-  state.tabId = tabId;
-  cache.set(tabId, state);
-  return state;
 }
 
 function scheduleFlush(tabId) {
@@ -103,7 +153,15 @@ function scheduleFlush(tabId) {
   pendingFlush.set(tabId, timer);
 }
 
-/** Write one tab's state through to session storage immediately. */
+/**
+ * Write one tab's state through to session storage.
+ *
+ * One write per tab at a time. A multi-megabyte state takes longer to
+ * serialise and ship than the 300 ms debounce, and a crawl changes it
+ * constantly; overlapping writes of the same key were piling up until the
+ * browser counted them together and refused for quota - at 3 MB of a 10 MB
+ * budget. A change during a write is flushed once, after it.
+ */
 export async function flush(tabId) {
   const state = cache.get(tabId);
   if (!state) return;
@@ -112,10 +170,55 @@ export async function flush(tabId) {
     clearTimeout(timer);
     pendingFlush.delete(tabId);
   }
+  if (inflight.has(tabId)) {
+    dirty.add(tabId);
+    return inflight.get(tabId);
+  }
+  const write = writeState(tabId, state).finally(() => {
+    inflight.delete(tabId);
+    if (dirty.delete(tabId)) flush(tabId);
+  });
+  inflight.set(tabId, write);
+  return write;
+}
+
+async function writeState(tabId, state) {
   try {
     await chrome.storage.session.set({ [key(tabId)]: state });
+    state.storageError = '';
   } catch (err) {
-    warn('session write failed', err);
+    // Kept on the state so the panel can say what the browser said.
+    state.storageError = String((err && err.message) || err).slice(0, 200);
+    // Out of room - session storage is 10 MB for the whole extension, and a
+    // crawl across many pages fills it. The live page is worth more than
+    // what came before it: drop the history, say so, and try once more.
+    if (state.history && state.history.length) {
+      state.history = [];
+      state.historyTruncated = true;
+      try {
+        await chrome.storage.session.set({ [key(tabId)]: state });
+        warn('session history dropped for tab', tabId, 'to stay within storage');
+        return;
+      } catch {
+        /* still too big: fall through to trimming the live items */
+      }
+    }
+    // Last resort: keep every URL and status, lose the structure the
+    // clustering leans on. A worker restart then still restores the page.
+    if (!state.trimmed) {
+      for (const k of state.order) if (state.items[k]) state.items[k] = lighten(state.items[k]);
+      state.trimmed = true;
+      try {
+        await chrome.storage.session.set({ [key(tabId)]: state });
+        warn('index trimmed for tab', tabId, 'to stay within storage');
+        return;
+      } catch (again) {
+        error('session write failed for tab', tabId, again);
+        return;
+      }
+    }
+    // Always reported: a failed write means a worker restart loses this tab.
+    error('session write failed for tab', tabId, err);
   }
 }
 
@@ -125,6 +228,7 @@ export async function flushAll() {
 
 export async function deleteTab(tabId) {
   cache.delete(tabId);
+  chains.delete(tabId);
   const timer = pendingFlush.get(tabId);
   if (timer) clearTimeout(timer);
   pendingFlush.delete(tabId);
@@ -154,24 +258,90 @@ export async function setPageInfo(tabId, { url, title }) {
 }
 
 /**
+ * A navigation has started in this tab (chrome.tabs.onUpdated 'loading').
+ * Nothing is removed yet: everything indexed from here on is tagged with the
+ * new generation and belongs to the new document. The old items are retired
+ * when the page reports in (resetTab with `olderThan`), or by
+ * navigationOutcome() if no page ever does.
+ */
+export async function beginNavigation(tabId) {
+  const state = await getTab(tabId);
+  state.gen = (state.gen || 0) + 1;
+  state.pendingGen = state.gen;
+  if (state.order.length) scheduleFlush(tabId); // an empty tab is not worth a write
+  return state;
+}
+
+/**
+ * The navigation finished (onUpdated 'complete'). Returns 'none' when nothing
+ * was pending, 'settled' when the page reported in or the document never
+ * changed (a download link, a 204), and 'orphaned' when the URL changed but no
+ * content script ever reported - chrome://, a PDF, the Web Store - so the
+ * caller should reset the tab itself.
+ */
+export async function navigationOutcome(tabId, tabUrl) {
+  const state = await getTab(tabId);
+  if (state.pendingGen == null) return 'none';
+  if (tabUrl && state.pageUrl && tabUrl !== state.pageUrl) return 'orphaned';
+  state.pendingGen = null;
+  return 'settled';
+}
+
+function dataChars(url) {
+  return isDataUri(url) ? url.length : 0;
+}
+
+/**
+ * What an item keeps once its page is gone. The structural path and the class
+ * frequencies are most of an item's weight and only matter for clustering
+ * against neighbours on the same page; a history item has none.
+ */
+function lighten(item) {
+  const { structuralPath, classCounts, ...rest } = item;
+  void structuralPath;
+  void classCounts;
+  return { ...rest, path: [], counts: '', repeatDepth: -1, inRepeatedGroup: false };
+}
+
+/**
  * SPA route change or real navigation.
  * @param {number} tabId
- * @param {{url?: string, keepHistory?: boolean}} opts
+ * @param {{url?: string, keepHistory?: boolean, olderThan?: number, keepFlags?: boolean}} opts
+ *   `olderThan` retires only items from generations before it and keeps the
+ *   rest live; absent, everything is retired. `keepFlags` carries the DRM and
+ *   MSE flags across a same-document route change, where the player persists.
  */
 export async function resetTab(tabId, opts = {}) {
   const state = await getTab(tabId);
   const keep = opts.keepHistory !== false;
-  const previous = state.order.map((k) => state.items[k]).filter(Boolean);
+  const live = state.order.map((k) => state.items[k]).filter(Boolean);
+  const olderThan = Number.isInteger(opts.olderThan) ? opts.olderThan : Infinity;
+  const stale = live.filter((item) => (item.gen || 0) < olderThan);
+  const kept = live.filter((item) => (item.gen || 0) >= olderThan);
+
   const next = emptyTab(tabId);
   next.pageUrl = opts.url || state.pageUrl;
   next.counter = state.counter;
-  if (keep && previous.length) {
-    next.history = [...state.history, ...previous].slice(-FILTER_CONFIG.MAX_ITEMS_PER_TAB);
+  next.gen = state.gen || 0;
+  if (opts.keepFlags) {
+    next.emeRequested = Boolean(state.emeRequested);
+    next.usesMse = Boolean(state.usesMse);
   }
+  for (const item of kept) {
+    next.items[item.normalizedUrl] = item;
+    next.order.push(item.normalizedUrl);
+    next.dataBytes += dataChars(item.url);
+  }
+  // History survives a reset that found nothing live: two resets in a row (a
+  // redirect hop, a replaceState on load) must not empty it.
+  next.history = keep
+    ? [...(state.history || []), ...stale.map(lighten)].slice(-FILTER_CONFIG.MAX_ITEMS_PER_TAB)
+    : [];
+  next.historyTruncated = keep ? Boolean(state.historyTruncated) : false;
   next.updatedAt = Date.now();
   cache.set(tabId, next);
   await flush(tabId);
-  log('tab reset', tabId, 'kept', next.history.length, 'historical items');
+  log('tab reset', tabId, 'retired', stale.length, 'kept', kept.length, 'history', next.history.length);
   return next;
 }
 
@@ -187,6 +357,11 @@ function mergeStatus(existing, incoming) {
   if (existing.status === STATUS.PROTECTED || incoming.status === STATUS.PROTECTED) {
     return STATUS.PROTECTED;
   }
+  // A decoded <img> or a readable canvas is proof the bytes arrived; a later
+  // DOM-only sighting must not talk that back down to "referenced".
+  if (existing.status === STATUS.CONFIRMED || incoming.status === STATUS.CONFIRMED) {
+    return STATUS.CONFIRMED;
+  }
   const sources = new Set([...(existing.sources || []), ...(incoming.sources || [])]);
   const sawDom = sources.has(SOURCE.DOM);
   const sawNet = sources.has(SOURCE.NET) || sources.has(SOURCE.MAIN) || sources.has(SOURCE.HAR);
@@ -200,6 +375,56 @@ function mergeStatus(existing, incoming) {
 
 function preferDefined(a, b) {
   return a === undefined || a === null || a === '' || a === 0 ? b : a;
+}
+
+/* ------------------------------------------------------------------ *
+ * Stored shape
+ *
+ * chrome.storage.session charges for the in-memory size of the value tree,
+ * about three times its JSON, so the 10 MB quota is reached at roughly 3 MB
+ * of JSON - and the structural path (sixteen {tag, classes[]} nodes) and the
+ * class-count map are most of an item's objects. They are stored as one
+ * string per node and one string per map, and expanded when read. Class
+ * names cannot contain spaces, which is what makes the join safe.
+ * ------------------------------------------------------------------ */
+
+function packItem(item) {
+  const { structuralPath, classCounts, ...rest } = item;
+  return {
+    ...rest,
+    path: Array.isArray(structuralPath)
+      ? structuralPath.map((n) => [n.tag || '', ...(n.classes || [])].join(' '))
+      : rest.path || [],
+    counts: classCounts && typeof classCounts === 'object'
+      ? Object.entries(classCounts).map(([name, n]) => `${name} ${n}`).join(' ')
+      : rest.counts || '',
+  };
+}
+
+/** The shape the similarity engine and the panel read. Tolerates both shapes. */
+export function unpackItem(item) {
+  if (!item) return item;
+  if (item.structuralPath) return item; // seeded or legacy: already expanded
+  const { path, counts, ...rest } = item;
+  const structuralPath = (path || []).map((node) => {
+    const [tag, ...classes] = String(node).split(' ');
+    return { tag, classes };
+  });
+  const classCounts = {};
+  const tokens = counts ? counts.split(' ') : [];
+  for (let i = 0; i + 1 < tokens.length; i += 2) classCounts[tokens[i]] = Number(tokens[i + 1]) || 0;
+  return { ...rest, structuralPath, classCounts: counts ? classCounts : null };
+}
+
+const hasStructure = (stored) => Boolean(
+  (stored.path && stored.path.length) || (stored.structuralPath && stored.structuralPath.length),
+);
+
+const AV_KINDS = new Set(['video', 'audio', 'stream']);
+
+/** Once a page has asked for a key system, its audio and video stay protected. */
+function protectedByEme(state, kind) {
+  return Boolean(state.emeRequested) && AV_KINDS.has(kind);
 }
 
 /**
@@ -233,7 +458,7 @@ export async function addCandidates(tabId, candidates) {
       continue;
     }
 
-    const existing = state.items[normalized];
+    const existing = unpackItem(state.items[normalized]);
     if (existing) {
       const incomingSources = [raw.source || SOURCE.DOM];
       const merged = {
@@ -270,10 +495,18 @@ export async function addCandidates(tabId, candidates) {
         frameUrl: preferDefined(existing.frameUrl, raw.frameUrl),
         frameOrigin: preferDefined(existing.frameOrigin, raw.frameOrigin),
         protectedReason: preferDefined(existing.protectedReason, raw.protectedReason),
+        // The newest scan reflects the DOM as it is now: a lazy loader has
+        // swapped its placeholder for the real thumbnail by the second pass.
+        previewUrl: raw.previewUrl || existing.previewUrl || '',
+        synthetic: preferDefined(existing.synthetic, raw.synthetic),
         sources: [...new Set([...(existing.sources || []), ...incomingSources])],
+        // Seen again by the current document: it belongs to this generation.
+        gen: state.gen || 0,
       };
-      merged.status = mergeStatus(existing, { ...raw, sources: incomingSources });
-      state.items[normalized] = merged;
+      merged.status = protectedByEme(state, kind)
+        ? STATUS.PROTECTED
+        : mergeStatus(existing, { ...raw, sources: incomingSources });
+      state.items[normalized] = packItem(merged);
       updated += 1;
       continue;
     }
@@ -283,18 +516,28 @@ export async function addCandidates(tabId, candidates) {
       rejected += 1;
       continue;
     }
+    const chars = dataChars(normalized);
+    if (chars && (state.dataBytes || 0) + chars > FILTER_CONFIG.DATA_URI_TAB_BUDGET) {
+      state.truncated = true;
+      rejected += 1;
+      continue;
+    }
+    state.dataBytes = (state.dataBytes || 0) + chars;
 
     state.counter += 1;
-    state.items[normalized] = {
+    state.items[normalized] = packItem({
       ...raw,
       kind,
+      gen: state.gen || 0,
       id: `${tabId}-${state.counter}`,
       normalizedUrl: normalized,
       url: raw.url,
       sources: [raw.source || SOURCE.DOM],
-      status: raw.status || (raw.source === SOURCE.DOM ? STATUS.REFERENCED : STATUS.BACKGROUND),
+      status: protectedByEme(state, kind)
+        ? STATUS.PROTECTED
+        : raw.status || (raw.source === SOURCE.DOM ? STATUS.REFERENCED : STATUS.BACKGROUND),
       firstSeen: raw.timestamp || Date.now(),
-    };
+    });
     state.order.push(normalized);
     added += 1;
   }
@@ -349,8 +592,7 @@ export async function collapseUpgradeDuplicates(tabId) {
 
   const rank = (key) => {
     const item = state.items[key];
-    const hasStructure = item.structuralPath && item.structuralPath.length ? 0 : 1;
-    return [hasStructure, item.firstSeen || 0];
+    return [hasStructure(item) ? 0 : 1, item.firstSeen || 0];
   };
 
   let collapsed = 0;
@@ -393,7 +635,7 @@ export async function collapseUpgradeDuplicates(tabId) {
 export function itemsOf(state, { includeHistory = false } = {}) {
   const live = state.order.map((k) => state.items[k]).filter(Boolean);
   const all = includeHistory ? [...live, ...(state.history || [])] : live;
-  return all.slice().sort((a, b) => {
+  return all.map(unpackItem).sort((a, b) => {
     const ra = STATUS_RANK[a.status] ?? 9;
     const rb = STATUS_RANK[b.status] ?? 9;
     if (ra !== rb) return ra - rb;
@@ -402,13 +644,13 @@ export function itemsOf(state, { includeHistory = false } = {}) {
 }
 
 export function findItem(state, idOrUrl) {
-  if (state.items[idOrUrl]) return state.items[idOrUrl];
+  if (state.items[idOrUrl]) return unpackItem(state.items[idOrUrl]);
   for (const k of state.order) {
     const item = state.items[k];
-    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return item;
+    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return unpackItem(item);
   }
   for (const item of state.history || []) {
-    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return item;
+    if (item && (item.id === idOrUrl || item.url === idOrUrl)) return unpackItem(item);
   }
   return null;
 }

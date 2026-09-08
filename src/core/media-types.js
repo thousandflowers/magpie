@@ -29,6 +29,13 @@ export const FILTER_CONFIG = {
   SPRITE_MAX_BYTES: 5 * 1024,
   /** Data URIs smaller than this are hidden from the default view. */
   DATA_URI_MIN_BYTES: 1024,
+  /**
+   * Total data: URL characters one tab may hold. A data: image is its own
+   * bytes and lives inside the session-storage index, which has a 10 MB quota
+   * for the whole extension; past this the tab reports itself truncated
+   * rather than losing the entire index to a failed write.
+   */
+  DATA_URI_TAB_BUDGET: 3 * 1024 * 1024,
   /** Hard ceiling on the per-tab in-memory index. */
   MAX_ITEMS_PER_TAB: 4000,
   /** Similarity scoring is chunked to keep the main thread responsive. */
