@@ -184,3 +184,14 @@ test('links most like the start page are visited first', () => {
   assert.ok(subAlbum > help && nextPage > help && frontPage >= random, `help ${help} random ${random}`);
   assert.equal(linkPriority('/wiki/X', 'not a url'), 0); // no start page to compare against
 });
+
+test('a closed disclosure is opened whatever it is called; an open or risky one is not', () => {
+  assert.equal(shouldClick(el({ text: 'Specifiche', role: 'tab', ariaSelected: 'false' })).click, true);
+  assert.equal(shouldClick(el({ text: 'Panoramica', role: 'tab', ariaSelected: 'true' })).click, false, 'already selected');
+  assert.equal(shouldClick(el({ text: 'Note tecniche', ariaExpanded: 'false', ariaControls: true })).click, true);
+  assert.equal(shouldClick(el({ text: 'Note tecniche', ariaExpanded: 'true', ariaControls: true })).click, false, 'already open');
+  assert.equal(shouldClick(el({ tag: 'summary', text: 'Materiali', ariaExpanded: 'false' })).click, true);
+  assert.equal(shouldClick(el({ text: 'Menu', ariaHasPopup: 'true' })).click, true);
+  assert.equal(shouldClick(el({ text: 'Elimina raccolta', ariaExpanded: 'false', ariaControls: true })).click, false, 'risk words win');
+  assert.equal(shouldClick(el({ text: 'Xyzzy' })).click, false, 'a plain button still needs a reason');
+});

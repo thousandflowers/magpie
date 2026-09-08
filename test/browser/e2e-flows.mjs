@@ -171,6 +171,30 @@ try {
   const page1Loads = site.hits.filter((h) => h.method === 'GET' && h.path === '/explore/1').length;
   check(page1Loads === 1, `the logo wrapped in a link was not clicked: page 1 loaded once (${page1Loads})`);
 
+  /* ================= C2. images behind tabs, an accordion, a menu, a <details> ================= */
+
+  await openPage(client, `${site.origin}/explore/tabs`);
+  const r = await openPanelFor(client, extensionId, `${site.origin}/explore/tabs*`);
+  const beforeTabs = await waitFor(async () => {
+    const s = await r.getState();
+    return has(s, EXPLORE.behindPath('domhidden', 2)) ? s : null;
+  }, { label: 'the tabs page to be indexed' });
+  check(range(EXPLORE.behind.domhidden).every((n) => { const i = has(beforeTabs, EXPLORE.behindPath('domhidden', n)); return i && i.sources.includes('net'); }),
+    'images hidden by CSS or [hidden] are indexed and fetched without any click');
+  check(!['tab', 'acc', 'menu', 'details'].some((k) => has(beforeTabs, EXPLORE.behindPath(k, 1))),
+    'images rendered only on a click are not there yet');
+  check((await r.ask({ type: 'explore-start', tabId: r.tabId })).ok, 'explore starts on the tabs page');
+  await waitFor(async () => {
+    const st = await r.ask({ type: 'explore-status', tabId: r.tabId });
+    return st.status && !st.status.running ? st.status : null;
+  }, { label: 'the tabs crawl to finish', timeout: 90000, every: 1000 });
+  const opened = await r.getState();
+  for (const kind of ['tab', 'acc', 'menu', 'details']) {
+    const got = range(EXPLORE.behind[kind]).filter((n) => { const i = has(opened, EXPLORE.behindPath(kind, n)); return i && i.sources.includes('net'); }).length;
+    check(got === EXPLORE.behind[kind], `images behind the ${kind} control were revealed and fetched (${got}/${EXPLORE.behind[kind]})`);
+  }
+  check(!site.hits.some((h) => h.path === '/trap/expand-delete'), 'a disclosure labelled "Elimina" was not operated');
+
   /* ================= D. a HAR import, saved without the network ================= */
 
   const captured = range(3).map((n) => ({ name: `photo-${n}.png`, url: `http://127.0.0.1:1/har/photo-${n}.png`, bytes: png(120, 90, 1000 + n) }));

@@ -173,8 +173,13 @@ gallery's next page and its sub-albums come before the front page, help and
 account links every page also carries. **Clicking is not**, and it is governed
 differently: on an app where
 you are signed in, an indiscriminate clicker eventually hits "Delete", "Pay" or
-"Log out". A click therefore needs a positive reason - the control either wraps
-media or reads as a media control - and everything else is refused. Form
+"Log out". A click therefore needs a positive reason - the control wraps media,
+reads as a media control, or has the shape of something that opens: a closed
+`aria-expanded`, a menu button, an unselected tab, a `<summary>`. That last
+reason is language-independent on purpose, because a tab called "Specifiche" and
+an accordion called "Note tecniche" hide images too. Everything else is refused.
+Images that are already in the page but hidden - a closed menu drawn with CSS -
+need no click at all: the scanner indexes the DOM, not the screen. Form
 controls, anything inside a `<form>`, submit buttons, `download` attributes,
 `target="_blank"` and any label or class matching the transactional/destructive
 list are refused whatever else they look like. A link is never clicked, and

@@ -71,6 +71,7 @@
       const role = (el.getAttribute('role') || '').toLowerCase();
       let affords = tag === 'button' || tag === 'summary' || role === 'button' || role === 'tab';
       if (!affords && el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1') affords = true;
+      if (!affords && (el.hasAttribute('aria-expanded') || el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-controls'))) affords = true;
 
       let rect;
       let style;
@@ -102,6 +103,13 @@
           hasDownloadAttr: el.hasAttribute('download'),
           insideForm: Boolean(el.closest && el.closest('form')),
           insideLink: Boolean(el.closest && el.closest('a[href]')),
+          // The shape of a disclosure: what it says it opens, and whether it already has.
+          ariaExpanded: tag === 'summary'
+            ? String(Boolean(el.parentElement && el.parentElement.open))
+            : (el.getAttribute('aria-expanded') || ''),
+          ariaSelected: el.getAttribute('aria-selected') || '',
+          ariaHasPopup: el.getAttribute('aria-haspopup') || '',
+          ariaControls: Boolean(el.getAttribute('aria-controls')),
           disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
           visible: true,
           containsMedia: Boolean(el.querySelector && el.querySelector('img, video, picture, canvas')),

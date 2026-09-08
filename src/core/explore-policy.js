@@ -129,8 +129,28 @@ function matchesAny(haystack, words) {
  * @property {boolean} [disabled]
  * @property {boolean} [visible]
  * @property {boolean} [containsMedia] the control wraps an img/video
+ * @property {string} [ariaExpanded] 'true' | 'false' | '' (a <summary> reports its <details>)
+ * @property {string} [ariaSelected] for tabs
+ * @property {string} [ariaHasPopup]
+ * @property {boolean} [ariaControls] the control names what it opens
  * @property {number} [area] rendered area in px²
  */
+
+/**
+ * A control whose shape says it opens or expands something it has not opened
+ * yet: a closed `aria-expanded`, a menu button, an unselected tab, a
+ * `<summary>`. Language-independent, which is the point - a tab called
+ * "Specifiche" and an accordion called "Note tecniche" hide images too.
+ */
+export function isDisclosure(el) {
+  const expanded = String(el.ariaExpanded || '');
+  if (expanded === 'true' || String(el.ariaSelected || '') === 'true') return false; // already open
+  if (expanded === 'false') return true;
+  if (el.ariaHasPopup && String(el.ariaHasPopup) !== 'false') return true;
+  if (el.ariaControls) return true;
+  if (String(el.role || '') === 'tab') return true;
+  return String(el.tag || '').toLowerCase() === 'summary';
+}
 
 /**
  * Should the explorer click this element?
@@ -180,6 +200,7 @@ export function shouldClick(el) {
   if (['tab', 'button'].includes(String(el.role || '')) && matchesAny(tokens, OPPORTUNITY_WORDS)) {
     return { click: true, reason: 'media control by role' };
   }
+  if (isDisclosure(el)) return { click: true, reason: 'opens or expands something not open yet' };
   return { click: false, reason: 'no positive reason to believe it reveals media' };
 }
 

@@ -871,3 +871,25 @@ the value tree, ~3x the JSON, and an item's structural path (sixteen
   IntersectionObservers never fire. That masked the scroll result entirely;
   every test page now opens in its own window, which is how the tab a person
   is looking at behaves.
+
+---
+
+# Eleventh pass - what hides behind a control that does not talk about media
+
+Asked whether images behind menus get found, the answer had two halves.
+Images that are in the DOM but hidden - `display: none`, `[hidden]`, a closed
+menu drawn with CSS - were already indexed and fetched without a click: the
+scanner reads the DOM, not the screen. Images the page renders only when a
+control is operated were found only if the control's label or class read as a
+media control. A tab called "Specifiche", an accordion called "Note tecniche",
+a button called "Menu" and a `<details>` called "Materiali" were not opened:
+measured on a fixture built for it, 0 of 4, 0 of 2, 0 of 2, 0 of 1.
+
+`isDisclosure()` adds a third positive reason, shape rather than words: a
+closed `aria-expanded="false"`, an `aria-haspopup`, an `aria-controls`, an
+unselected `role="tab"`, a `<summary>` whose `<details>` is closed. An open one
+is not clicked (that would close it), and the risk words still veto - the
+fixture's "Elimina raccolta" disclosure records a server hit if touched, and
+did not. The content script reports the four attributes and lets an element
+that carries them afford a click even without a pointer cursor. After the
+change: 4/4, 2/2, 2/2, 1/1, all fetched, trap untouched. Unit-tested.

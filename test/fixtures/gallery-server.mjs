@@ -105,6 +105,8 @@ const IMAGE_ROUTES = [
   [/^\/uploads\/explore\/lightbox\.png$/, () => [1200, 800, 930]],
   [/^\/uploads\/explore\/page2-(\d)\.png$/, (m) => [300, 200, 940 + Number(m[1])]],
   [/^\/uploads\/explore\/lazy-(\d+)\.png$/, (m) => [300, 200, 960 + Number(m[1])]],
+  [/^\/uploads\/explore\/behind-(tab|acc|menu|details|domhidden)-(\d)\.png$/,
+    (m) => [300, 200, 980 + Number(m[2]) + 'tab acc menu details domhidden'.split(' ').indexOf(m[1]) * 10]],
 ];
 
 function imageSpec(pathname) {
@@ -290,6 +292,14 @@ export const EXPLORE = {
   hiddenPath: (n) => `/uploads/explore/hidden-${n}.png`,
   lightboxPath: '/uploads/explore/lightbox.png',
   page2Path: (n) => `/uploads/explore/page2-${n}.png`,
+  /**
+   * Third page: images that exist only after a control is operated. Labels are
+   * deliberately neutral - "Specifiche", "Note tecniche", "Menu" - so nothing
+   * about them reads as a media control; only their shape says they open
+   * something. Two more are in the DOM but hidden, which needs no click.
+   */
+  behind: { tab: 4, acc: 2, menu: 2, details: 1, domhidden: 2 },
+  behindPath: (kind, n) => `/uploads/explore/behind-${kind}-${n}.png`,
 };
 
 const EXPLORE_1_HTML = `<!doctype html>
@@ -365,6 +375,68 @@ const EXPLORE_2_HTML = `<!doctype html>
 </body>
 </html>`;
 
+const behindImgs = (kind, from, count, width = 300) => range(count).map((i) =>
+  `<img src="${EXPLORE.behindPath(kind, from + i - 1)}" width="${width}" height="200" alt="${kind} ${from + i - 1}">`).join('');
+
+const EXPLORE_TABS_HTML = `<!doctype html>
+<html lang="it">
+<head><meta charset="utf-8"><title>Explore tabs</title>
+<style>[role=tab][aria-selected=true] { font-weight: bold; } .acc, .menu { cursor: pointer; }</style></head>
+<body>
+  <main>
+    <img src="${EXPLORE.visiblePath(1)}" width="300" height="200" alt="visible">
+    <!-- in the DOM, hidden by CSS: indexed without any click -->
+    <img src="${EXPLORE.behindPath('domhidden', 1)}" width="300" height="200" alt="css hidden" style="display:none">
+    <div hidden><img src="${EXPLORE.behindPath('domhidden', 2)}" width="300" height="200" alt="attr hidden"></div>
+
+    <div role="tablist">
+      <button type="button" role="tab" aria-selected="true" aria-controls="tab-a">Panoramica</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="tab-b">Specifiche</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="tab-c">Colori</button>
+    </div>
+    <div id="tab-a" role="tabpanel">Solo testo.</div>
+    <div id="tab-b" role="tabpanel" hidden></div>
+    <div id="tab-c" role="tabpanel" hidden></div>
+
+    <button type="button" class="acc" aria-expanded="false" aria-controls="acc-1">Note tecniche</button>
+    <div id="acc-1" hidden></div>
+
+    <button type="button" class="menu" aria-haspopup="true" aria-expanded="false">Menu</button>
+    <ul id="menu-list" hidden></ul>
+
+    <details><summary>Materiali</summary><div class="details-body"></div></details>
+
+    <!-- a disclosure whose label is destructive: shape says open, words say no -->
+    <button type="button" aria-expanded="false" aria-controls="danger">Elimina raccolta</button>
+    <div id="danger" hidden></div>
+  </main>
+  <script>
+    const fill = (id, html) => { const el = document.getElementById(id); el.hidden = false; if (!el.dataset.filled) { el.innerHTML = html; el.dataset.filled = '1'; } };
+    const tabImgs = { 'tab-b': ${JSON.stringify(behindImgs('tab', 1, 2))}, 'tab-c': ${JSON.stringify(behindImgs('tab', 3, 2))} };
+    for (const tab of document.querySelectorAll('[role=tab]')) {
+      tab.addEventListener('click', () => {
+        for (const t of document.querySelectorAll('[role=tab]')) t.setAttribute('aria-selected', String(t === tab));
+        for (const p of document.querySelectorAll('[role=tabpanel]')) p.hidden = true;
+        const id = tab.getAttribute('aria-controls');
+        fill(id, tabImgs[id] || 'Solo testo.');
+      });
+    }
+    document.querySelector('.acc').addEventListener('click', (e) => {
+      e.currentTarget.setAttribute('aria-expanded', 'true');
+      fill('acc-1', ${JSON.stringify(behindImgs('acc', 1, 2))});
+    });
+    document.querySelector('.menu').addEventListener('click', (e) => {
+      e.currentTarget.setAttribute('aria-expanded', 'true');
+      fill('menu-list', ${JSON.stringify(behindImgs('menu', 1, 2, 120))});
+    });
+    document.querySelector('details').addEventListener('toggle', (e) => {
+      if (e.target.open) e.target.querySelector('.details-body').innerHTML = ${JSON.stringify(behindImgs('details', 1, 1))};
+    });
+    document.querySelector('[aria-controls=danger]').addEventListener('click', () => fetch('/trap/expand-delete'));
+  </script>
+</body>
+</html>`;
+
 const FRAME_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Embedded widget</title></head>
 <body><img src="${FRAME_IMAGE_PATH}" width="200" height="200" alt="inner"></body></html>`;
@@ -392,6 +464,7 @@ export function startGalleryServer(port = 0) {
     if (pathname === '/spa' || pathname === '/spa/two') return html(SPA_HTML);
     if (pathname === '/explore/1') return html(EXPLORE_1_HTML);
     if (pathname === '/explore/2') return html(EXPLORE_2_HTML);
+    if (pathname === '/explore/tabs') return html(EXPLORE_TABS_HTML);
     if (pathname === '/api/feed') return reply(200, 'application/json', Buffer.from(FEED_JSON));
     if (pathname === '/api/feed-xhr') return reply(200, 'application/json; charset=utf-8', Buffer.from(XHR_JSON));
     if (pathname === SPA.masterPath) return reply(200, 'application/vnd.apple.mpegurl', Buffer.from(masterPlaylist()));
