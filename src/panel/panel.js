@@ -158,6 +158,8 @@ async function refresh({ consumeSeed = false } = {}) {
   state.truncated = Boolean(response.truncated);
   state.historyCount = response.historyCount || 0;
   state.emeRequested = Boolean(response.emeRequested);
+  // The "reload the page" hint has done its job once anything arrives.
+  if (state.notice && state.items.length) state.notice = '';
 
   if (!el.template.value) el.template.value = state.options.filenameTemplate || DEFAULT_TEMPLATE;
   if (state.options.threshold) el.threshold.value = state.options.threshold;
@@ -676,7 +678,12 @@ async function downloadSynthetic(item, index, total) {
     setProgressText(`capture failed: ${response.reason || 'element is gone'}`);
     return false;
   }
-  const blob = await (await fetch(response.dataUrl)).blob();
+  let blob;
+  try {
+    blob = await (await fetch(response.dataUrl)).blob();
+  } catch {
+    return false;
+  }
   const filename = applyTemplate(el.template.value || DEFAULT_TEMPLATE, {
     ...tokensFor({ ...item, mimeType: blob.type }, {
       pageUrl: state.pageUrl, pageTitle: state.pageTitle, index, total,
@@ -689,7 +696,12 @@ async function downloadSynthetic(item, index, total) {
 
 /** A data: image is already in hand: write it without the download queue. */
 async function saveDataUrl(item, index, total) {
-  const blob = await (await fetch(item.url)).blob();
+  let blob;
+  try {
+    blob = await (await fetch(item.url)).blob();
+  } catch {
+    return false; // a malformed data: URL is one failed file, not a failed batch
+  }
   saveBlob(blob, applyTemplate(el.template.value || DEFAULT_TEMPLATE, tokensFor(
     { ...item, mimeType: blob.type || item.mimeType },
     { pageUrl: state.pageUrl, pageTitle: state.pageTitle, index, total },
@@ -730,15 +742,16 @@ async function downloadItems(items) {
   let index = 0;
   let fromHar = 0;
   let captured = 0;
+  let failedLocal = 0;
   for (const item of local) {
     index += 1;
-    if (hasHarBody(item)) {
-      if (saveFromHar(item, index, downloadable.length)) fromHar += 1;
-    } else if (item.url.startsWith('data:')) {
-      if (await saveDataUrl(item, index, downloadable.length)) captured += 1;
-    } else if (await downloadSynthetic(item, index, downloadable.length)) {
-      captured += 1;
-    }
+    let saved = false;
+    if (hasHarBody(item)) saved = saveFromHar(item, index, downloadable.length);
+    else if (item.url.startsWith('data:')) saved = await saveDataUrl(item, index, downloadable.length);
+    else saved = await downloadSynthetic(item, index, downloadable.length);
+    if (!saved) failedLocal += 1;
+    else if (hasHarBody(item)) fromHar += 1;
+    else captured += 1;
   }
 
   state.localSaved = fromHar + captured;
@@ -746,6 +759,8 @@ async function downloadItems(items) {
     const parts = [];
     if (fromHar) parts.push(`${fromHar} saved from the HAR, no network needed`);
     if (captured) parts.push(`${captured} captured from the page`);
+    if (failedLocal) parts.push(`${failedLocal} could not be saved`);
+    el.progress.hidden = false;
     setProgressText(parts.join(' · ') || 'nothing to save');
     return;
   }
@@ -1018,6 +1033,7 @@ chrome.tabs.onActivated.addListener(async () => {
   const next = await resolveTabId();
   if (next === state.tabId) return;
   state.tabId = next;
+  state.notice = '';
   clearSelection();
   showDetail(null);
   refresh({ consumeSeed: true });

@@ -35,14 +35,15 @@ async function flushQueue() {
   flushTimer = null;
   const batches = [...queue.entries()];
   queue.clear();
-  for (const [tabId, items] of batches) {
+  // Order matters within a tab (the chain guarantees it), not across tabs.
+  await Promise.all(batches.map(async ([tabId, items]) => {
     try {
       const result = await serialize(tabId, () => addCandidates(tabId, items));
       if ((result.added || result.updated) && onFlush) onFlush(tabId, result);
     } catch (err) {
       log('net flush failed', err);
     }
-  }
+  }));
 }
 
 function headerValue(headers, name) {

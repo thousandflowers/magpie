@@ -8,9 +8,9 @@
  */
 
 import { normalizeUrl } from '../core/url-normalize.js';
-import { classify, rejectionReason, FILTER_CONFIG } from '../core/media-types.js';
+import { classify, rejectionReason, isDataUri, FILTER_CONFIG } from '../core/media-types.js';
 import { SOURCE, STATUS, STATUS_RANK } from '../shared/messages.js';
-import { log, warn } from '../shared/debug.js';
+import { log, warn, error } from '../shared/debug.js';
 
 const KEY_PREFIX = 'tab:';
 const OPTIONS_KEY = 'options';
@@ -70,6 +70,17 @@ function emptyTab(tabId) {
     usesMse: false,
     emeRequested: false,
     truncated: false,
+    /**
+     * Navigation generation. Bumped when a navigation starts; every item
+     * carries the generation it was indexed under, so a reset can retire the
+     * previous document's items and keep the ones that already belong to the
+     * new one, whichever order the two arrived in.
+     */
+    gen: 0,
+    /** The generation a started navigation is waiting to settle, or null. */
+    pendingGen: null,
+    /** data: URL characters held, against FILTER_CONFIG.DATA_URI_TAB_BUDGET. */
+    dataBytes: 0,
     updatedAt: 0,
   };
 }
@@ -146,7 +157,8 @@ export async function flush(tabId) {
   try {
     await chrome.storage.session.set({ [key(tabId)]: state });
   } catch (err) {
-    warn('session write failed', err);
+    // Always reported: a failed write means a worker restart loses this tab.
+    error('session write failed for tab', tabId, err);
   }
 }
 
@@ -186,24 +198,77 @@ export async function setPageInfo(tabId, { url, title }) {
 }
 
 /**
+ * A navigation has started in this tab (chrome.tabs.onUpdated 'loading').
+ * Nothing is removed yet: everything indexed from here on is tagged with the
+ * new generation and belongs to the new document. The old items are retired
+ * when the page reports in (resetTab with `olderThan`), or by
+ * navigationOutcome() if no page ever does.
+ */
+export async function beginNavigation(tabId) {
+  const state = await getTab(tabId);
+  state.gen = (state.gen || 0) + 1;
+  state.pendingGen = state.gen;
+  if (state.order.length) scheduleFlush(tabId); // an empty tab is not worth a write
+  return state;
+}
+
+/**
+ * The navigation finished (onUpdated 'complete'). Returns 'none' when nothing
+ * was pending, 'settled' when the page reported in or the document never
+ * changed (a download link, a 204), and 'orphaned' when the URL changed but no
+ * content script ever reported - chrome://, a PDF, the Web Store - so the
+ * caller should reset the tab itself.
+ */
+export async function navigationOutcome(tabId, tabUrl) {
+  const state = await getTab(tabId);
+  if (state.pendingGen == null) return 'none';
+  if (tabUrl && state.pageUrl && tabUrl !== state.pageUrl) return 'orphaned';
+  state.pendingGen = null;
+  return 'settled';
+}
+
+function dataChars(url) {
+  return isDataUri(url) ? url.length : 0;
+}
+
+/**
  * SPA route change or real navigation.
  * @param {number} tabId
- * @param {{url?: string, keepHistory?: boolean}} opts
+ * @param {{url?: string, keepHistory?: boolean, olderThan?: number, keepFlags?: boolean}} opts
+ *   `olderThan` retires only items from generations before it and keeps the
+ *   rest live; absent, everything is retired. `keepFlags` carries the DRM and
+ *   MSE flags across a same-document route change, where the player persists.
  */
 export async function resetTab(tabId, opts = {}) {
   const state = await getTab(tabId);
   const keep = opts.keepHistory !== false;
-  const previous = state.order.map((k) => state.items[k]).filter(Boolean);
+  const live = state.order.map((k) => state.items[k]).filter(Boolean);
+  const olderThan = Number.isInteger(opts.olderThan) ? opts.olderThan : Infinity;
+  const stale = live.filter((item) => (item.gen || 0) < olderThan);
+  const kept = live.filter((item) => (item.gen || 0) >= olderThan);
+
   const next = emptyTab(tabId);
   next.pageUrl = opts.url || state.pageUrl;
   next.counter = state.counter;
-  if (keep && previous.length) {
-    next.history = [...state.history, ...previous].slice(-FILTER_CONFIG.MAX_ITEMS_PER_TAB);
+  next.gen = state.gen || 0;
+  if (opts.keepFlags) {
+    next.emeRequested = Boolean(state.emeRequested);
+    next.usesMse = Boolean(state.usesMse);
   }
+  for (const item of kept) {
+    next.items[item.normalizedUrl] = item;
+    next.order.push(item.normalizedUrl);
+    next.dataBytes += dataChars(item.url);
+  }
+  // History survives a reset that found nothing live: two resets in a row (a
+  // redirect hop, a replaceState on load) must not empty it.
+  next.history = keep
+    ? [...(state.history || []), ...stale].slice(-FILTER_CONFIG.MAX_ITEMS_PER_TAB)
+    : [];
   next.updatedAt = Date.now();
   cache.set(tabId, next);
   await flush(tabId);
-  log('tab reset', tabId, 'kept', next.history.length, 'historical items');
+  log('tab reset', tabId, 'retired', stale.length, 'kept', kept.length, 'history', next.history.length);
   return next;
 }
 
@@ -314,9 +379,13 @@ export async function addCandidates(tabId, candidates) {
         frameUrl: preferDefined(existing.frameUrl, raw.frameUrl),
         frameOrigin: preferDefined(existing.frameOrigin, raw.frameOrigin),
         protectedReason: preferDefined(existing.protectedReason, raw.protectedReason),
-        previewUrl: preferDefined(existing.previewUrl, raw.previewUrl),
+        // The newest scan reflects the DOM as it is now: a lazy loader has
+        // swapped its placeholder for the real thumbnail by the second pass.
+        previewUrl: raw.previewUrl || existing.previewUrl || '',
         synthetic: preferDefined(existing.synthetic, raw.synthetic),
         sources: [...new Set([...(existing.sources || []), ...incomingSources])],
+        // Seen again by the current document: it belongs to this generation.
+        gen: state.gen || 0,
       };
       merged.status = protectedByEme(state, kind)
         ? STATUS.PROTECTED
@@ -331,11 +400,19 @@ export async function addCandidates(tabId, candidates) {
       rejected += 1;
       continue;
     }
+    const chars = dataChars(normalized);
+    if (chars && (state.dataBytes || 0) + chars > FILTER_CONFIG.DATA_URI_TAB_BUDGET) {
+      state.truncated = true;
+      rejected += 1;
+      continue;
+    }
+    state.dataBytes = (state.dataBytes || 0) + chars;
 
     state.counter += 1;
     state.items[normalized] = {
       ...raw,
       kind,
+      gen: state.gen || 0,
       id: `${tabId}-${state.counter}`,
       normalizedUrl: normalized,
       url: raw.url,

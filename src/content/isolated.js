@@ -289,13 +289,15 @@
     const link = el.closest && el.closest('a[href]');
     if (link) {
       const href = absolute(link.getAttribute('href'));
-      if (href && href !== absolute(src) && looksLikeMedia(href)) {
+      const preview = absolute(src);
+      if (href && href !== preview && looksLikeMedia(href)) {
         push(candidate(href, el, {
           kind: 'image',
           status: 'referenced',
           // The panel renders the thumbnail for this tile rather than pulling
-          // the full-size file just to draw a 150px preview.
-          previewUrl: absolute(src),
+          // the full-size file just to draw a 150px preview. A lazy loader's
+          // placeholder (a data: or blob: URL) is not a preview of anything.
+          previewUrl: /^https?:/i.test(preview) ? preview : '',
           alt: el.getAttribute('alt') || '',
         }));
       }

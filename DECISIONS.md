@@ -690,3 +690,104 @@ the worker is missing, so the next silent failure explains itself.
 - Live `en.wikipedia.org/wiki/Eurasian_magpie`: 57 items (54 images, 3 audio),
   13 confirmed by both layers, 23 `/thumb/` URLs; six probed, six upgraded
   (`500px-…02.jpg` → the 12,070,770-byte original); no console errors.
+
+---
+
+# Ninth pass - review of the eighth, and the flows the gallery never reached
+
+A line-by-line review of the eighth pass found five real problems in it, and a
+second end-to-end run (`test/browser/e2e-flows.mjs`, 41 assertions, in `npm
+test`) went after everything the gallery page could not exercise. Both are
+recorded here; the unit count is now 124.
+
+## What the review found, and what replaced it
+
+1. **`tabs.onUpdated` 'loading' reset the index for loads that never replaced
+   the document.** A download link served as an attachment, a 204, a stopped
+   load: each fires 'loading' and then 'complete' on a tab whose page - and
+   content script - are still there. The eighth pass wiped the index on every
+   one of them. The reset is now in **two steps**. 'loading' opens a new
+   *generation* and removes nothing; every item carries the generation it was
+   indexed under. The page's own document_start report retires only the
+   generations before the pending one, so a network batch that arrived first
+   is kept whichever order the two came in - which was the whole point of the
+   change. 'complete' settles: if the URL never changed, nothing happens; if it
+   changed and, after a 1.5 s grace, no page ever reported (chrome://, a PDF,
+   the Web Store), the tab is reset then. A `pushState` completes in the same
+   instant it starts and its own report follows within the grace, which is why
+   the grace exists.
+2. **A reset that found nothing live emptied the history.** `resetTab` only
+   carried `history` forward when there were live items to add to it; a
+   redirect hop or a `replaceState` on load - two resets in a row - dropped
+   everything collected on earlier pages. History is now carried regardless.
+3. **The DRM flag died on a route change.** `emeRequested` is set once, when the
+   player asks for a key system; an SPA moving to the next title with
+   `pushState` rebuilt the state from scratch, and the next title's segments
+   arrived downloadable. A same-document reset now keeps the DRM and MSE flags
+   (`keepFlags`); a real navigation still clears them.
+4. **`previewUrl` could be a lazy loader's placeholder.** The link-target
+   original took its preview from the `<img>` `src` of the moment, which on a
+   lazy gallery is a 1x1 `data:` placeholder, and the store kept the first
+   value forever. A preview is now only ever an `http(s)` URL, the newest scan
+   wins, and a tile whose preview fails falls back to the file itself once.
+5. **A malformed `data:` URL took the whole batch down.** `fetch()` on it
+   rejected out of `downloadItems`, so the remaining captures and the entire
+   network queue were never started, silently. Each local save now fails on
+   its own and is counted in the progress line.
+
+Also from the review: the "reload the page" hint stayed on screen after the
+reload had worked (it clears itself once items arrive, and on a tab switch);
+the network observer flushed one tab's batch after another so a slow tab held
+the rest (tabs now merge in parallel; order matters only within a tab); and a
+tab could hold an unbounded number of inline `data:` images inside the
+10 MB session-storage quota, where one failed write loses the whole index. A
+tab now holds at most 3 MiB of `data:` URLs (`DATA_URI_TAB_BUDGET`), reports
+itself truncated past that, and a failed write is an error in the console
+rather than a debug line. The CI job has a 15-minute timeout and the runs
+release the fixture server whichever step throws, so a hung browser cannot
+hold a runner for six hours.
+
+The store's reset semantics are now unit-tested (`test/store.test.mjs`, with
+an in-memory `chrome.storage`): a batch arriving before the page's report is
+kept, two resets in a row keep the history, a settled load changes nothing, an
+orphaned one is flagged, the DRM flag survives a route change and not a
+navigation, and the `data:` budget refuses and frees as it should.
+
+## The second run
+
+- **Layer B is real.** Five image URLs named only inside fetch and XHR JSON
+  bodies were indexed as `background` from the MAIN world, with no DOM and
+  without a single request for them; the API endpoints themselves were not.
+- **Streams end to end.** A manifest fetched by the page was indexed as a
+  stream; the drawer listed its three variants with resolutions, generated
+  both commands, and "export segment list" wrote the 1080p variant's three
+  segments to a file.
+- **DRM.** The key-system request marked the video and the stream `protected`,
+  left images alone, and a video added afterwards arrived protected. The flag
+  survived a `pushState`.
+- **A route change** moved the previous route's items to history, kept them
+  retrievable, and indexed the new route's images with both DOM and network
+  evidence - the ordering the generation reset exists for.
+- **A worker restart** (`ServiceWorker.stopAllWorkers` from the panel's page
+  session, the target seen to disappear) lost nothing: same items, same title,
+  same flag, from `chrome.storage.session`.
+- **The explorer** walked two pages: revealed four images behind "Mostra altre
+  foto", opened the lightbox, followed "Pagina 2" and kept one index across the
+  hop, and touched none of six traps - two destructive buttons, an upload
+  button, a form-shaped "Mostra altre foto", an "Esci" link and a `download`
+  link - each of which would have recorded a hit on the server.
+- **HAR import** through the real file input: four entries merged, three with
+  bodies; the download wrote the three files with their exact bytes from a
+  host that does not exist (`127.0.0.1:1`) while the one exported without a
+  body failed over the network as it should, and the progress line said
+  `3 saved locally · 0/1 fetched, 1 failed`.
+- **The panel's controls**: `a` selects the focused group, `Escape` clears,
+  "select similar to this" takes the grid, and the threshold and template
+  persist as options.
+
+## Verified
+
+`npm test`: 124 unit tests, the smoke test, 37 + 41 end-to-end assertions,
+all green, two consecutive runs. Still not verified: a HAR exported by DevTools
+itself, the explorer on a third-party site, the context menu driven
+mechanically, Arc, Dia, Brave, Edge.

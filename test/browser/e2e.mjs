@@ -9,103 +9,35 @@
  * machine - the gallery is served from this process.
  */
 
-import { mkdtempSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  findChrome, launchChrome, waitForBrowser, listTargets,
-  connect, attach, collectErrors, evaluate, sleep,
-} from './harness.mjs';
+  check, waitFor, listFiles, requireChrome, launchWithExtension, openPage, openPanelFor,
+  report, sleep, evaluate,
+} from './e2e-lib.mjs';
 import {
   startGalleryServer, GALLERY, thumbPath, originalPath, HERO_PATH, FRAME_IMAGE_PATH, imageBytes, dataImageBytes,
 } from '../fixtures/gallery-server.mjs';
 
 const PORT = 9335;
 
-const failures = [];
-const check = (ok, label) => {
-  console.log(`${ok ? '✔' : '✖'} ${label}`);
-  if (!ok) failures.push(label);
-};
+const binary = requireChrome('end-to-end check');
 
-async function waitFor(probe, { timeout = 15000, every = 300, label = 'condition' } = {}) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const value = await probe();
-    if (value) return value;
-    await sleep(every);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-function listFiles(root, prefix = '') {
-  const out = [];
-  for (const name of readdirSync(join(root, prefix))) {
-    const rel = prefix ? `${prefix}/${name}` : name;
-    const stat = statSync(join(root, rel));
-    if (stat.isDirectory()) out.push(...listFiles(root, rel));
-    else if (!name.endsWith('.crdownload')) out.push({ path: rel, size: stat.size });
-  }
-  return out;
-}
-
-const binary = findChrome();
-if (!binary) {
-  const message = 'no Chromium found. Set CHROME_PATH to point at one.';
-  if (process.env.CI) {
-    console.error(`✖ end-to-end check cannot be skipped on CI: ${message}`);
-    process.exit(1);
-  }
-  console.log(`SKIP end-to-end check: ${message}`);
-  process.exit(0);
-}
-
-const site = await startGalleryServer();
 const downloadDir = mkdtempSync(join(tmpdir(), 'magpie-downloads-'));
-const chrome = launchChrome(binary, PORT, [], { downloadDir });
-const errors = [];
-let client;
+let site = null;
+let run = null;
 
 try {
-  const version = await waitForBrowser(PORT);
-  client = await connect(version.webSocketDebuggerUrl);
-  collectErrors(client, errors);
-
-  const worker = await waitFor(
-    async () => (await listTargets(PORT)).find((t) => t.url.includes('/src/background/service-worker.js')),
-    { label: 'service worker', timeout: 20000 },
-  );
-  await attach(client, worker.id);
-  const extensionId = new URL(worker.url).host;
-  // Attaching the debugger to the worker and navigating in the same instant
-  // loses the page's webRequest events about half the time. A harness
-  // artefact - nothing attaches to the worker in normal use - so wait it out.
-  await sleep(500);
+  site = await startGalleryServer();
+  run = await launchWithExtension(binary, PORT, { downloadDir });
+  const { client, errors, extensionId } = run;
 
   /* ---------------- the page, then the panel pointed at it ---------------- */
 
-  const { targetId: pageTarget } = await client.send('Target.createTarget', { url: `${site.origin}/` });
-  await attach(client, pageTarget);
-
-  const panelUrl = `chrome-extension://${extensionId}/src/panel/panel.html`;
-  const { targetId: panelTarget } = await client.send('Target.createTarget', { url: panelUrl });
-  const panel = await attach(client, panelTarget);
-  await sleep(800);
-  const tabId = await evaluate(client, panel, `(async () => {
-    const tabs = await chrome.tabs.query({ url: ${JSON.stringify(`${site.origin}/*`)} });
-    if (!tabs.length) throw new Error('gallery tab not found');
-    return tabs[0].id;
-  })()`);
-  await client.send('Page.navigate', { url: `${panelUrl}?tabId=${tabId}` }, panel);
-  await sleep(800);
-
-  const ask = (message) => evaluate(client, panel,
-    `new Promise((resolve) => chrome.runtime.sendMessage(${JSON.stringify(message)}, (r) => { void chrome.runtime.lastError; resolve(r); }))`);
-  const toTab = (message) => evaluate(client, panel,
-    `new Promise((resolve) => chrome.tabs.sendMessage(${tabId}, ${JSON.stringify(message)}, (r) => { void chrome.runtime.lastError; resolve(r); }))`);
-  const getState = () => ask({ type: 'get-state', tabId });
-  const tileCount = () => evaluate(client, panel, `document.querySelectorAll('mg-item').length`);
+  await openPage(client, `${site.origin}/`);
+  const { panel, tabId, ask, toTab, getState, tileCount } = await openPanelFor(client, extensionId, `${site.origin}/*`);
   const find = (state, test) => state.items.find((i) => test(i.url));
   const count = (state, test) => state.items.filter((i) => test(i.url)).length;
   const isThumb = (u) => /beach-\d\d-150x150\.png$/.test(u);
@@ -255,18 +187,17 @@ try {
   check(unexpected.length === 0, `no console errors${unexpected.length ? `:\n    ${unexpected.join('\n    ')}` : ''}`);
 } catch (err) {
   console.error(`✖ end-to-end check crashed: ${err.message}`);
-  if (chrome.stderr.length) console.error(chrome.stderr.join('').slice(-2000));
+  if (run && run.chrome.stderr.length) console.error(run.chrome.stderr.join('').slice(-2000));
   process.exitCode = 1;
 } finally {
-  if (client) client.close();
-  chrome.kill();
-  await site.close();
+  // Everything that could keep the process alive is released here, whichever
+  // step threw - a listening server would otherwise hang CI until its timeout.
+  if (run) {
+    run.client.close();
+    run.chrome.kill();
+  }
+  if (site) await site.close();
   rmSync(downloadDir, { recursive: true, force: true });
 }
 
-if (failures.length) {
-  console.error(`\n${failures.length} assertion(s) failed`);
-  process.exitCode = 1;
-} else if (!process.exitCode) {
-  console.log('\nall end-to-end assertions passed');
-}
+report('end-to-end');

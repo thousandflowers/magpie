@@ -9,6 +9,7 @@
 import {
   getTab, addCandidates, resetTab, setPageInfo, deleteTab, itemsOf,
   findItem, getOptions, setOptions, flushAll, pruneClosedTabs, updateItem, patchTab, serialize,
+  beginNavigation, navigationOutcome,
 } from './store.js';
 import { installNetObserver, flushNow } from './net-observer.js';
 import {
@@ -26,6 +27,13 @@ import { log, warn, error } from '../shared/debug.js';
 
 const PANEL_URL = 'src/panel/panel.html';
 const SEED_KEY = 'panel-seed';
+/**
+ * How long after a navigation 'completes' to wait for the page to report in
+ * before treating the document as one no content script runs on. A pushState
+ * completes in the same instant it starts and its report follows a beat
+ * later; a chrome:// page or a PDF never reports at all.
+ */
+const ORPHAN_GRACE_MS = 1500;
 
 /* ------------------------------------------------------------------ *
  * Panel plumbing
@@ -152,24 +160,36 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 /**
- * A navigation, seen from the browser side. This fires before the new
- * document issues its first subresource request, and it reaches the worker in
- * the same queue as the webRequest events, so the reset always lands before
- * the network batch it must not wipe. The page's own document_start message
- * travels through the renderer instead and can arrive after that batch - it
- * did, and took the first dozen items with it.
+ * Navigations, seen from the browser side.
+ *
+ * 'loading' fires before the new document issues its first subresource
+ * request and reaches the worker in the same queue as the webRequest events;
+ * it opens a new generation, and nothing is removed. The page's own
+ * document_start message travels through the renderer and can arrive after
+ * the first network batch - it did, and a reset performed there took the
+ * first dozen items with it. Now that message retires only the generations
+ * before its own, so the batch survives whichever arrives first.
+ *
+ * 'complete' settles, after a grace period for the page's own report: a load
+ * that never replaced the document (a download link, a 204) leaves everything
+ * as it was, a same-document route change is handled by the page's message,
+ * and a document no content script could report from (chrome://, a PDF) is
+ * reset here instead.
  */
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'loading') return;
-  serialize(tabId, async () => {
-    if (await isCrawling(tabId)) return; // a crawl keeps its index across pages
+  if (changeInfo.status === 'loading') {
+    serialize(tabId, () => beginNavigation(tabId));
+    return;
+  }
+  if (changeInfo.status !== 'complete') return;
+  setTimeout(() => serialize(tabId, async () => {
+    const outcome = await navigationOutcome(tabId, tab && tab.url);
+    if (outcome !== 'orphaned') return;
+    if (await isCrawling(tabId)) return;
     const options = await getOptions();
-    await resetTab(tabId, {
-      url: changeInfo.url || (tab && tab.url) || '',
-      keepHistory: options.keepSessionHistory,
-    });
+    await resetTab(tabId, { url: tab.url, keepHistory: options.keepSessionHistory });
     refreshPanel(tabId);
-  });
+  }), ORPHAN_GRACE_MS);
 });
 
 if (chrome.runtime.onSuspend) {
@@ -195,11 +215,23 @@ const handlers = {
     const tabId = tabIdFor(message, sender);
     if (tabId == null) return { ok: false };
     if (sender && sender.frameId) return { ok: true }; // only the top document names the page
-    // The index itself is reset from chrome.tabs.onUpdated (see below); this
-    // message only names the page and, during a crawl, resumes the walk.
+    const crawling = message.navigation ? await isCrawling(tabId) : false;
+    if (message.navigation && !crawling) {
+      // Retire the previous document's items; keep what the network observer
+      // has already filed under the generation tabs.onUpdated opened.
+      const options = await getOptions();
+      const state = await getTab(tabId);
+      await resetTab(tabId, {
+        url: message.url,
+        keepHistory: options.keepSessionHistory,
+        ...(state.pendingGen != null ? { olderThan: state.pendingGen } : {}),
+      });
+    }
     await setPageInfo(tabId, { url: message.url, title: message.title });
     refreshPanel(tabId);
-    if (message.navigation && (await isCrawling(tabId))) await resumeAfterNavigation(tabId);
+    // A crawl walks the tab from page to page; wiping the index on each hop
+    // would throw away exactly what it went to collect.
+    if (message.navigation && crawling) await resumeAfterNavigation(tabId);
     return { ok: true };
   },
 
@@ -208,7 +240,8 @@ const handlers = {
     if (tabId == null) return { ok: false };
     if (sender && sender.frameId) return { ok: true };
     const options = await getOptions();
-    await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory });
+    // Same document, new route: the player - and its DRM session - persist.
+    await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory, keepFlags: true });
     refreshPanel(tabId);
     return { ok: true };
   },

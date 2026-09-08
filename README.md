@@ -57,11 +57,12 @@ Chrome 120+. Loads unchanged in Arc, Dia, Brave and Edge; without
 `chrome.sidePanel` the panel opens in a popup window instead.
 
 ```sh
-npm test           # 116 unit tests, the service-worker smoke test, then the end-to-end run
+npm test           # unit tests, the service-worker smoke test, then both end-to-end runs
 npm run test:unit  # unit tests only, no browser needed
-npm run test:e2e   # the extension against a local gallery in a real Chrome (38 assertions)
+npm run test:e2e   # the extension against a local gallery in a real Chrome
+npm run test:flows # SPA feeds, a stream, DRM, a route change, a worker restart, the explorer, HAR import
 npm run test:dash  # DRM boundary checked in the real panel (18 assertions)
-npm run gallery    # serve that gallery on :8765 to try the extension by hand
+npm run gallery    # serve the fixture site on :8765 to try the extension by hand
 npm run screenshots
 ```
 
@@ -72,14 +73,18 @@ service worker goes unnoticed. CI installs **Chrome for Testing** on purpose:
 branded Google Chrome 137 and later ignores `--load-extension` without a word,
 and the workflow refuses to continue on a branded build.
 
-The end-to-end run serves a gallery from the test process - thumbnails linking
-to originals, a hero, a toolbar of icons, a lazy section, an iframe that
-arrives late, a painted canvas and an inline `data:` image - loads the unpacked
-extension in Chrome, and reads the result back out of the real panel: what was
-indexed and by which layers, how it clustered, that "find originals" proved the
-full-size files with `HEAD` alone, and that the download wrote every original's
-exact bytes under the templated name. It also loads nothing from outside the
-machine.
+The end-to-end runs serve a small site from the test process and load the
+unpacked extension in Chrome. The first is a gallery - thumbnails linking to
+originals, a hero, a toolbar of icons, a lazy section, an iframe that arrives
+late, a painted canvas and an inline `data:` image - read back out of the real
+panel: what was indexed and by which layers, how it clustered, that "find
+originals" proved the full-size files with `HEAD` alone, and that the download
+wrote every original's exact bytes under the templated name. The second walks
+the flows a gallery does not reach: media that exists only in a JSON feed, an
+HLS manifest fetched the way a player fetches it, a key-system request, a
+`pushState` route change, a service-worker restart, the explorer crossing two
+pages past four traps, a HAR import saved with no network, and the panel's own
+keys and options. Nothing in either run leaves the machine.
 
 ---
 

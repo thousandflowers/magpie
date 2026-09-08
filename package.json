@@ -33,12 +33,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\" && node test/browser/service-worker.smoke.mjs && node test/browser/e2e.mjs",
+    "test": "node --test \"test/*.test.mjs\" && node test/browser/service-worker.smoke.mjs && node test/browser/e2e.mjs && node test/browser/e2e-flows.mjs",
     "test:unit": "node --test \"test/*.test.mjs\"",
     "test:smoke": "node test/browser/service-worker.smoke.mjs",
     "test:e2e": "node test/browser/e2e.mjs",
     "test:dash": "node test/browser/dash-protection.mjs",
     "gallery": "node test/fixtures/gallery-server.mjs",
-    "screenshots": "node test/browser/panel-screenshots.mjs"
+    "screenshots": "node test/browser/panel-screenshots.mjs",
+    "test:flows": "node test/browser/e2e-flows.mjs"
   }
 }
