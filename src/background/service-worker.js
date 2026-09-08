@@ -231,7 +231,7 @@ const handlers = {
     refreshPanel(tabId);
     // A crawl walks the tab from page to page; wiping the index on each hop
     // would throw away exactly what it went to collect.
-    if (message.navigation && crawling) await resumeAfterNavigation(tabId);
+    if (message.navigation && crawling) await resumeAfterNavigation(tabId, message.url);
     return { ok: true };
   },
 

@@ -155,3 +155,13 @@ test('no word appears in both lists, which would make the outcome arbitrary', ()
   const overlap = OPPORTUNITY_WORDS.filter((w) => risky.has(w));
   assert.deepEqual(overlap, [], `overlapping: ${overlap.join(', ')}`);
 });
+
+test('a control inside a link is the link, and is left to the crawl queue', () => {
+  // The span wrapping a site logo wraps an image, which is otherwise a
+  // positive reason to click - and its <a> goes to the front page.
+  const { click, reason } = shouldClick(el({ tag: 'span', containsMedia: true, insideLink: true }));
+  assert.equal(click, false);
+  assert.match(reason, /inside a link/);
+  assert.equal(shouldClick(el({ tag: 'span', text: 'show more photos', insideLink: true })).click, false);
+  assert.equal(shouldClick(el({ tag: 'span', containsMedia: true, insideLink: false })).click, true);
+});

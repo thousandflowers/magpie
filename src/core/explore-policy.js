@@ -70,6 +70,12 @@ export const EXPLORE_LIMITS = {
   DRY_ROUNDS: 2,
   /** Politeness gap between page navigations. */
   PAGE_DELAY_MS: 1200,
+  /**
+   * Wall-clock budget for one page's click rounds. A page thick with pointer
+   * controls (a wiki, a shop) otherwise spends minutes clicking chrome that
+   * reveals nothing, and the crawl never reaches page two.
+   */
+  MAX_PAGE_MS: 45_000,
 };
 
 function normalise(text) {
@@ -111,6 +117,7 @@ function matchesAny(haystack, words) {
  * @property {string} [target]
  * @property {boolean} [hasDownloadAttr]
  * @property {boolean} [insideForm]
+ * @property {boolean} [insideLink] the control sits inside an <a href>
  * @property {boolean} [disabled]
  * @property {boolean} [visible]
  * @property {boolean} [containsMedia] the control wraps an img/video
@@ -149,10 +156,13 @@ export function shouldClick(el) {
   }
 
   // A link that leaves the page is navigation, handled by the crawl queue —
-  // not by clicking.
+  // not by clicking. The same goes for anything inside one: clicking the span
+  // that wraps a site's logo is clicking the logo's link, and the crawl found
+  // itself on a wiki's front page over and over.
   if (tag === 'a' && el.href && !/^javascript:/i.test(el.href)) {
     return { click: false, reason: 'link — queued for navigation instead' };
   }
+  if (el.insideLink) return { click: false, reason: 'inside a link — navigation, not a control' };
 
   // Positive reason required from here on.
   if (el.containsMedia) return { click: true, reason: 'wraps media — likely opens it larger' };

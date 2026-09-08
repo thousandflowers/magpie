@@ -168,6 +168,8 @@ try {
   const sprung = site.hits.filter((h) => h.path.startsWith('/trap/') || h.path.endsWith('.zip'));
   check(sprung.length === 0, `no trap was touched${sprung.length ? `: ${sprung.map((h) => h.path).join(', ')}` : ''}`);
   check(crawled.pageUrl === `${site.origin}/explore/2`, `the tab ended on page 2 (${crawled.pageUrl})`);
+  const page1Loads = site.hits.filter((h) => h.method === 'GET' && h.path === '/explore/1').length;
+  check(page1Loads === 1, `the logo wrapped in a link was not clicked: page 1 loaded once (${page1Loads})`);
 
   /* ================= D. a HAR import, saved without the network ================= */
 

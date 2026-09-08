@@ -134,7 +134,7 @@ export async function pageFinished(tabId, result) {
   const crawl = await readCrawl(tabId);
   if (!crawl || !crawl.running) return null;
 
-  crawl.pages += 1;
+  if (!(result && result.skipped)) crawl.pages += 1;
   crawl.clicks += Number(result && result.clicks) || 0;
   // Persist the counters before any branch that stops: stopCrawl re-reads from
   // storage, so an unwritten increment would be reported as one page short.
@@ -166,10 +166,27 @@ export async function pageFinished(tabId, result) {
   return still;
 }
 
-/** Called when a page reports in after a crawl-driven navigation. */
-export async function resumeAfterNavigation(tabId) {
+/**
+ * Called when a page reports in during a crawl. Usually it is the page the
+ * crawl navigated to; sometimes the tab went somewhere on its own - a click
+ * that turned out to be a link, a redirect. That page is explored once, like
+ * any other, and a page already visited is not explored again: re-exploring
+ * it is how a logo click became an endless loop through a wiki's front page.
+ */
+export async function resumeAfterNavigation(tabId, url) {
   const crawl = await readCrawl(tabId);
   if (!crawl || !crawl.running) return false;
+  const key = crawlKey(url, url);
+  if (key && key !== crawl.currentUrl) {
+    if (crawl.visited.includes(key)) {
+      log('crawl landed on a visited page, moving on', key);
+      await pageFinished(tabId, { clicks: 0, skipped: true });
+      return true;
+    }
+    crawl.visited.push(key);
+    crawl.currentUrl = key;
+    await writeCrawl(tabId, crawl);
+  }
   await sendToTab(tabId, { type: EXPLORE_MSG.PAGE, limits: EXPLORE_LIMITS });
   return true;
 }

@@ -101,6 +101,7 @@
           target: el.getAttribute('target') || '',
           hasDownloadAttr: el.hasAttribute('download'),
           insideForm: Boolean(el.closest && el.closest('form')),
+          insideLink: Boolean(el.closest && el.closest('a[href]')),
           disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
           visible: true,
           containsMedia: Boolean(el.querySelector && el.querySelector('img, video, picture, canvas')),
@@ -189,15 +190,22 @@
     return steps;
   }
 
+  /** What a click round could have changed: the page's height, or its media. */
+  function pageSignature() {
+    return `${document.documentElement.scrollHeight}:${document.querySelectorAll('img, video, picture, canvas').length}`;
+  }
+
   async function explorePage(limits) {
     running = true;
     stopRequested = false;
     let clicks = 0;
     let dry = 0;
+    const deadline = Date.now() + (limits.MAX_PAGE_MS || 45_000);
 
     const scrolled = await scrollThrough(limits);
 
-    while (clicks < limits.MAX_CLICKS && dry < limits.DRY_ROUNDS && !stopRequested) {
+    while (clicks < limits.MAX_CLICKS && dry < limits.DRY_ROUNDS && !stopRequested && Date.now() < deadline) {
+      const before = pageSignature();
       const candidates = collectCandidates();
       if (!candidates.length) break;
 
@@ -213,7 +221,7 @@
       dry = 0;
 
       for (const index of approved) {
-        if (stopRequested || clicks >= limits.MAX_CLICKS) break;
+        if (stopRequested || clicks >= limits.MAX_CLICKS || Date.now() >= deadline) break;
         const target = candidates[index];
         if (!target || !target.el.isConnected) continue;
         try {
@@ -225,8 +233,9 @@
         }
         await sleep(limits.SETTLE_MS);
       }
-      // Newly revealed content may itself be lazy.
-      await scrollThrough(limits);
+      // Newly revealed content may itself be lazy - but only re-scroll when
+      // the round actually revealed something; a full pass costs seconds.
+      if (pageSignature() !== before) await scrollThrough(limits);
     }
 
     const links = collectLinks();

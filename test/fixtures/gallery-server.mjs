@@ -338,6 +338,8 @@ const EXPLORE_2_HTML = `<!doctype html>
 <html lang="it">
 <head><meta charset="utf-8"><title>${EXPLORE.title2}</title></head>
 <body>
+  <!-- a site logo: a span wrapping an image, inside a link back to page 1 -->
+  <header><a href="/explore/1"><span class="logo" style="cursor:pointer;display:inline-block"><img src="${EXPLORE.visiblePath(1)}" width="120" height="80" alt="logo"></span></a></header>
   <main>
     <div class="gallery">
       ${range(EXPLORE.page2).map((n) => `<img src="${EXPLORE.page2Path(n)}" width="300" height="200" alt="page2 ${n}">`).join('\n      ')}

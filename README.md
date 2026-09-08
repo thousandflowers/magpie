@@ -182,9 +182,9 @@ through any pane that scrolls on its own - so every lazy image and every
 "load more" sentinel on the way down actually intersects; jumping straight to
 the bottom would load only what sits there.
 
-Bounded by construction: 40 pages, 60 clicks and 120 scroll steps per page, a
-1.2 s gap between navigations, and a stop that reaches both the queue and the
-page. The rules live in `src/core/explore-policy.js` and are tested against a
+Bounded by construction: 40 pages, 60 clicks, 120 scroll steps and 45 s of
+click rounds per page, a 1.2 s gap between navigations, and a stop that reaches
+both the queue and the page. The rules live in `src/core/explore-policy.js` and are tested against a
 set of traps.
 
 ## DRM - a hard boundary
