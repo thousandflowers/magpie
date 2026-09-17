@@ -893,3 +893,175 @@ fixture's "Elimina raccolta" disclosure records a server hit if touched, and
 did not. The content script reports the four attributes and lets an element
 that carries them afford a click even without a pointer cursor. After the
 change: 4/4, 2/2, 2/2, 1/1, all fetched, trap untouched. Unit-tested.
+
+---
+
+# Twelfth pass - the claims, checked against the code that makes them
+
+A completion pass: four reviewers read the whole tree against what the README
+promises, and what they found was mostly a gap between a claim and its
+implementation rather than a missing feature. Everything below was reproduced
+before it was fixed.
+
+## A third-party frame could steer the crawl off the site
+
+Every content script runs in every frame, and the explore messages were
+broadcast to all of them with no `frameId`. A subframe that answered spoke for
+a page it did not own: `shouldFollow` compares a link against the *page URL the
+sender reported*, so an ad frame's links were same-origin to the ad network,
+passed the check, and `chrome.tabs.update` navigated the whole tab there. The
+frame's "page done" also ended the crawl before the real page had finished its
+first scroll, and each frame burned a page off the 40-page budget.
+
+Three guards, because any one of them alone is a single point of failure:
+messages go to `frameId: 0`; the content script refuses unless it is the top
+frame; and the background rejects explore replies from any other frame, taking
+"this page" from `sender.url` - which the browser sets - rather than from the
+message, which the sender chooses. A fixture page now carries a genuinely
+cross-origin frame, served by a second instance of the fixture server on a
+second port.
+
+The frame's own media is still indexed. Refusing its links is not refusing its
+media.
+
+## The DRM boundary held only for the spellings we happened to write
+
+Three ways a protected stream parsed as a clean one:
+
+1. `doc.getElementsByTagName('ContentProtection')` matches the *qualified*
+   name in an XML document. `<cenc:ContentProtection>` is legal DASH and is
+   what commercial packagers emit, so a Widevine manifest came back clean and
+   the panel offered all three stream actions on it. Lookups go by local name
+   now, and the test parser learned `getElementsByTagNameNS` so the fixtures
+   can see the difference.
+2. `#EXT-X-KEY` with no `METHOD` cleared the flag entirely. `METHOD` is
+   REQUIRED by RFC 8216, so a tag without one is malformed - which is exactly
+   when a hard boundary has to fail closed, not open.
+3. `KEYFORMAT` was matched only by UUID, so `com.microsoft.playready` named no
+   system at all. Both spellings are one table now.
+
+The boundary itself is unchanged: a key system is identified only in order to
+say "not downloadable".
+
+## Two ways into the explorer's refusals
+
+`<button form="pay">` sitting outside its form is a submit button with no type
+attribute and no ancestor `<form>` - so neither the "submit button" rule nor
+the "inside a form" rule saw it, and wrapping an icon gave it a positive reason
+to be clicked. It is the shape of a checkout button in a sticky footer.
+`el.form` is consulted now. Note that reading `el.type` instead would be worse:
+a `<button>` with no type attribute is a submit button *by spec*, so every
+ordinary disclosure would be refused and the eleventh pass undone.
+
+And `new URL()` does not decode a path while the server does, so
+`/account/%64elete` was followed where `/account/delete` was refused. Both
+spellings are checked; an address that cannot be decoded is judged on what can
+be read of it rather than waved through.
+
+## Losing media to the dedupe key
+
+The per-tab index is keyed on the normalized URL, and a merge keeps the first
+URL and discards the second. `normalizeUrl` kept only query keys it recognised
+as size- or auth-bearing, so `getimage?id=1001` and `getimage?id=2002` were one
+photo. `?id=`, `?file=`, `?path=`, `?src=` and `?v=` are how the CDNs and
+gallery scripts this extension is pointed at name an asset in the first place.
+
+The rule is inverted: keep an unknown key, drop known tracking keys. Losing an
+asset is worse than listing one twice, and this is the only place in the
+codebase where a guess costs a file.
+
+One existing assertion asserted the old behaviour. It was wrong for the same
+reason, and now asserts the opposite with the argument attached.
+
+## A srcset is split on whitespace
+
+`srcset.split(',')` is wrong for exactly the URLs this extension exists for:
+`/upload/c_fill,w_1600/photo.jpg` on Cloudinary, and every
+`data:image/...;base64,...`. The fragments were relative paths that resolved
+against the page into 404s - and since the srcset result outranks
+`currentSrc`, the fragment *replaced* the working URL. On a CDN-backed site
+every `<img>` yielded a broken address and the real file was never reported.
+
+The same function multiplied density descriptors by 1000 directly beneath a
+comment explaining that width descriptors must win, so `2x` beat `1600w`.
+
+## Pressing Stop
+
+`pump()` returned early on a stopped session before `finishIfDone`, so a
+stopped session never reached `finished` - and the panel's progress line, error
+list and sidecar are all gated on that terminal emit. Stop froze the counter
+and then said nothing. Every cancelled job also arrived as `USER_CANCELED`,
+which is not retryable, so stopping a four-wide session reported four failed
+downloads the user had cancelled on purpose.
+
+While there: the retry path's advisory HEAD had no timeout, so a server that
+accepts a connection and never answers pinned a job in `backoff` - which
+`finishIfDone` counts as pending - forever. And it treated every 4xx as fatal,
+although plenty of CDNs answer 405 to HEAD and some signed URLs answer 403 to
+anything but GET. Only 404 and 410 say the file is not there.
+
+## The gesture
+
+`sidePanel.open()` has to run in the same task as the gesture that asked for
+it. `openPanel` awaited two `storage.session` round-trips and `setOptions`
+first, so it threw for every context-menu entry and each one quietly took the
+popup-window fallback: the side panel never appeared from a right-click. The
+seed is still written, and still awaited before returning - just not in front
+of the call.
+
+## The page-facing edges
+
+`installAll()` called six hooks in a row with no guard, and three write to a
+prototype with a bare assignment inside a strict-mode IIFE: a page that freezes
+`XMLHttpRequest.prototype` aborted the run at hook two, leaving history, blob,
+MSE and EME uninstalled and SPA route detection silently dead. The EME guard
+tested `__magpie` on a freshly `bind()`ed function, which carries none of the
+original's own properties, so it never fired. `seen` was never cleared on a
+route change although the index on the other side is reset, so revisiting an
+SPA route reported nothing at all. And a response body was buffered whole and
+measured afterwards - `Number(content-length)` is 0 when the header is absent,
+which is every chunked response.
+
+The bridge's token is a namespace shipped in the CRX, not a secret: any script
+on the page can post a well-formed candidate, and what survives sanitising
+reaches `img.src`, a credentialed CORS-free HEAD, and `chrome.downloads`.
+`new URL()` is perfectly happy with `javascript:` and `file:`. Candidate URLs
+are held to the schemes media actually arrives on now - which promptly rejected
+the scanner's own `magpie-canvas:` placeholders until they were allowed through
+explicitly, caught by the end-to-end run rather than by argument.
+
+`extOf` also matched an extension anywhere in the URL, fragment included - and
+a fragment never reaches the server, so it cannot say anything about what comes
+back. `#x.m3u8` on any link made it a stream, whose drawer fetches it.
+
+## One hour on a browser change
+
+Every browser check failed locally with "the extension indexed nothing", in
+two separate checkouts, including one at a commit that had passed an hour
+earlier. CI was green throughout, which was the clue: Chrome 153 ignores the
+`url` handed to `Target.createTarget` and leaves the new window on about:blank,
+so the fixture server was never asked for anything. The window and the
+navigation are separate calls now, which also loads a page exactly once - and
+one explore assertion counts exactly that.
+
+Worth keeping: when a local failure and a green CI disagree, the difference is
+the browser, not the code.
+
+## Store packaging
+
+`npm run package` builds `dist/magpie-<version>.zip` from a staging copy of the
+shipped paths only, and is a set of refusals: a version mismatch between
+`manifest.json` and `package.json`, a manifest naming a file that does not
+exist or one the zip would leave out, or any remote script, stylesheet or font
+anywhere in the source stops the build. The release workflow unzips the
+artefact and runs the smoke test against *that*, so a packaging mistake cannot
+reach the store.
+
+`tools/store-screenshots.mjs` writes `docs/store/*.png` at the 1280x800 the
+store demands, by capturing the page and the panel separately and composing
+them. Its first version produced three perfectly sized, perfectly empty images
+and reported success, because a composite passed as a `data:` URL runs to
+megabytes and is truncated in silence. It now refuses to write a screenshot
+whose two halves did not both decode - and the guard that checks the selection
+actually happened caught a second false success, a caption about selecting a
+set over a panel reading "1 selected".
