@@ -73,6 +73,10 @@
     const trimmed = url.trim();
     if (!trimmed || trimmed === '#') return '';
     if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
+    // The scanner's own placeholders for media with no URL of its own - a
+    // painted <canvas>, an inline <svg>. They name an element, are never
+    // fetched, and `new URL()` would resolve them into nonsense.
+    if (trimmed.startsWith('magpie-canvas:') || trimmed.startsWith('magpie-svg:')) return trimmed;
     try {
       const resolved = new URL(trimmed, document.baseURI);
       // A scheme that is not a way of fetching bytes is not a media URL. This

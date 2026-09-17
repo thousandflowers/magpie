@@ -166,8 +166,11 @@ try {
   const extensionId = new URL(worker.url).host;
   const panelUrl = `chrome-extension://${extensionId}/src/panel/panel.html`;
 
-  const { targetId } = await client.send('Target.createTarget', { url: panelUrl });
+  const { targetId } = await client.send('Target.createTarget', { url: 'about:blank' });
   const panel = await attach(client, targetId);
+  // Chrome 153 ignores the `url` given to Target.createTarget and leaves the
+  // new window at about:blank, so the navigation has to be asked for.
+  await client.send('Page.navigate', { url: panelUrl }, panel);
   await client.send('Page.enable', {}, panel);
   await sleep(1200);
 

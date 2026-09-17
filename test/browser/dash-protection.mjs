@@ -44,9 +44,12 @@ try {
   const extensionId = new URL(worker.url).host;
 
   const { targetId } = await client.send('Target.createTarget', {
-    url: `chrome-extension://${extensionId}/src/panel/panel.html`,
+    url: 'about:blank',
   });
   const panel = await attach(client, targetId);
+  // Chrome 153 ignores the `url` given to Target.createTarget and leaves the
+  // new window at about:blank, so the navigation has to be asked for.
+  await client.send('Page.navigate', { url: `chrome-extension://${extensionId}/src/panel/panel.html` }, panel);
   await sleep(1500);
 
   // Point the panel at the blank tab, then feed it two stream items the way a

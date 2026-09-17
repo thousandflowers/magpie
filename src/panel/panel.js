@@ -290,9 +290,15 @@ async function render() {
     fragment.appendChild(node);
   });
 
+  // #body is the scroll container. Emptying it collapses scrollHeight, the
+  // browser clamps scrollTop to 0, and re-appending does not put it back - so
+  // while a page was still producing media, every state update (four a second)
+  // yanked the panel back to the top under the reader's hands.
+  const scrollTop = el.body.scrollTop;
   el.body.textContent = '';
   el.body.appendChild(el.empty);
   el.body.appendChild(fragment);
+  if (scrollTop) el.body.scrollTop = scrollTop;
 
   updateSelectionUi();
   updateBanner();
@@ -502,6 +508,15 @@ function showDetail(item) {
  * Streams
  * ------------------------------------------------------------------ */
 
+/**
+ * Manifests already read, by URL. render() rebuilds an open drawer on every
+ * state update - four a second while a page is still producing media - and
+ * each rebuild used to re-fetch the manifest with the user's cookies. One
+ * read per manifest is enough; it is a document, not a live feed.
+ * @type {Map<string, string>}
+ */
+const manifestCache = new Map();
+
 async function renderStream(item) {
   const box = document.createElement('div');
   box.textContent = 'reading manifest…';
@@ -510,8 +525,12 @@ async function renderStream(item) {
   let info = null;
   let failure = '';
   try {
-    const response = await fetch(item.url, { credentials: 'include' });
-    const text = await response.text();
+    let text = manifestCache.get(item.url);
+    if (text == null) {
+      const response = await fetch(item.url, { credentials: 'include' });
+      text = await response.text();
+      manifestCache.set(item.url, text);
+    }
     const isDash =
       /\.mpd(?:[?#]|$)/i.test(item.url) || /dash\+xml/i.test(item.mimeType || '') ||
       text.trimStart().startsWith('<');
@@ -841,6 +860,11 @@ el.body.addEventListener('click', (event) => {
   const tile = event.target.closest('mg-item');
   if (tile && tile.item) {
     if (event.detail === 2) {
+      // Chrome delivers detail:1 before detail:2, so the first half of a
+      // double-click has already toggled this tile. Put it back: opening a
+      // tile to look at it should not quietly add it to the download set.
+      setSelected(tile.item.id, !tile.hasAttribute('selected'));
+      updateSelectionUi();
       showDetail(tile.item);
       return;
     }

@@ -41,6 +41,7 @@
     "gallery": "node test/fixtures/gallery-server.mjs",
     "screenshots": "node test/browser/panel-screenshots.mjs",
     "test:flows": "node test/browser/e2e-flows.mjs",
-    "package": "node tools/package.mjs"
+    "package": "node tools/package.mjs",
+    "screenshots:store": "node tools/store-screenshots.mjs"
   }
 }
