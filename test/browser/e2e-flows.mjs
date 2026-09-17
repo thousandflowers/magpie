@@ -199,6 +199,8 @@ try {
     check(got === EXPLORE.behind[kind], `images behind the ${kind} control were revealed and fetched (${got}/${EXPLORE.behind[kind]})`);
   }
   check(!site.hits.some((h) => h.path === '/trap/expand-delete'), 'a disclosure labelled "Elimina" was not operated');
+  check(!site.hits.some((h) => h.path === '/trap/form-owner'),
+    'a submit button that owns its form from outside it was not pressed');
 
   /* ================= C3. a third-party frame does not get to steer the crawl ================= */
 

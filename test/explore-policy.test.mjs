@@ -195,3 +195,38 @@ test('a closed disclosure is opened whatever it is called; an open or risky one 
   assert.equal(shouldClick(el({ text: 'Elimina raccolta', ariaExpanded: 'false', ariaControls: true })).click, false, 'risk words win');
   assert.equal(shouldClick(el({ text: 'Xyzzy' })).click, false, 'a plain button still needs a reason');
 });
+
+/* ------------------------------------------------------------------ *
+ * Percent-encoding
+ *
+ * new URL() does not decode the path, and the server does. A link written
+ * `/account/%64elete` is `/account/delete` by the time it is requested, so a
+ * check that only reads the raw spelling is a check the site's own encoder
+ * can walk through.
+ * ------------------------------------------------------------------ */
+
+test('a percent-encoded destructive path is refused like the plain one', () => {
+  const from = 'https://e.com/gallery';
+  assert.equal(shouldFollow('https://e.com/account/delete?id=1', from).follow, false);
+  assert.equal(shouldFollow('https://e.com/account/%64elete?id=1', from).follow, false);
+  assert.equal(shouldFollow('https://e.com/%6c%6f%67%6f%75%74', from).follow, false);
+});
+
+test('a percent-encoded destructive query is refused like the plain one', () => {
+  const from = 'https://e.com/gallery';
+  assert.equal(shouldFollow('https://e.com/index.php?action=edit', from).follow, false);
+  assert.equal(shouldFollow('https://e.com/index.php?action=%65dit', from).follow, false);
+});
+
+test('an undecodable address is judged on what can be read of it', () => {
+  // A lone % is not valid percent-encoding; decodeURIComponent throws on it.
+  // That must not take the check down, and must not wave the link through.
+  const from = 'https://e.com/gallery';
+  assert.equal(shouldFollow('https://e.com/gallery/page-2%', from).follow, true);
+  assert.equal(shouldFollow('https://e.com/logout%', from).follow, false);
+});
+
+test('encoding does not make an ordinary link suspicious', () => {
+  const from = 'https://e.com/gallery';
+  assert.equal(shouldFollow('https://e.com/album/%32%30%32%34', from).follow, true);
+});

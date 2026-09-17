@@ -60,6 +60,29 @@ const DRM_UUIDS = {
 };
 
 /**
+ * A KEYFORMAT names its key system either by UUID or in reverse-DNS form.
+ * Both spellings are data here rather than a chain of string tests, so a new
+ * system is one line. Identifying a system is only ever used to say "not
+ * downloadable": no key material is requested, stored or parsed.
+ */
+const DRM_KEYFORMATS = {
+  ...DRM_UUIDS,
+  'com.apple.streamingkeydelivery': 'fairplay',
+  'com.widevine.alpha': 'widevine',
+  'com.microsoft.playready': 'playready',
+  'org.w3.clearkey': 'clearkey',
+};
+
+/** @param {string} keyFormat @param {string[]} into */
+function noteKeySystem(keyFormat, into) {
+  const fmt = String(keyFormat || '').toLowerCase();
+  if (!fmt) return;
+  for (const [id, name] of Object.entries(DRM_KEYFORMATS)) {
+    if (fmt.includes(id) && !into.includes(name)) into.push(name);
+  }
+}
+
+/**
  * @param {string} text raw .m3u8 body
  * @param {string} baseUrl absolute URL the manifest was fetched from
  * @returns {StreamInfo}
@@ -131,17 +154,19 @@ export function parseM3U8(text, baseUrl) {
     } else if (line.startsWith('#EXT-X-KEY:') || line.startsWith('#EXT-X-SESSION-KEY:')) {
       const a = parseAttributes(line.slice(line.indexOf(':') + 1));
       const method = (a.METHOD || '').toUpperCase();
-      if (method && method !== 'NONE') {
+      // METHOD is REQUIRED by RFC 8216, and METHOD=NONE means no other
+      // attribute is present. So a tag that omits METHOD, or declares NONE and
+      // then names a key anyway, is malformed - which is exactly when a hard
+      // boundary must fail closed. Reading the key system only inside
+      // `if (method)` let a playlist naming a Widevine licence server parse as
+      // a clean stream, and the panel offered every action on it.
+      const namesAKey = Boolean(a.URI || a.KEYFORMAT);
+      if (method !== 'NONE' || namesAKey) {
         out.encrypted = true;
-        out.encryptionMethod = method;
-        const fmt = (a.KEYFORMAT || '').toLowerCase();
-        for (const [uuid, name] of Object.entries(DRM_UUIDS)) {
-          if (fmt.includes(uuid) && !out.drmSystems.includes(name)) out.drmSystems.push(name);
-        }
-        if (fmt.includes('com.apple.streamingkeydelivery') && !out.drmSystems.includes('fairplay')) {
-          out.drmSystems.push('fairplay');
-        }
-        if (fmt.includes('widevine') && !out.drmSystems.includes('widevine')) {
+        out.encryptionMethod = method && method !== 'NONE' ? method : 'UNDECLARED';
+        noteKeySystem(a.KEYFORMAT, out.drmSystems);
+        if (String(a.KEYFORMAT || '').toLowerCase().includes('widevine')
+          && !out.drmSystems.includes('widevine')) {
           out.drmSystems.push('widevine');
         }
       }
@@ -161,6 +186,26 @@ export function parseM3U8(text, baseUrl) {
   out.live = sawTargetDuration && !hasEndlist && !out.master;
   out.variants.sort((a, b) => b.bandwidth - a.bandwidth);
   return out;
+}
+
+/**
+ * Elements by local name, whatever prefix they carry.
+ *
+ * `getElementsByTagName` matches the *qualified* name in an XML document, so
+ * `<cenc:ContentProtection>` - legal DASH, and what commercial packagers emit -
+ * does not match a search for `ContentProtection`. The manifest then parses as
+ * a clean stream and the panel offers every action on a Widevine asset. A hard
+ * boundary has to hold on the spelling the packager chose.
+ *
+ * @param {any} doc
+ * @param {string} local
+ * @returns {ArrayLike<any>}
+ */
+function elementsNamed(doc, local) {
+  if (typeof doc.getElementsByTagNameNS === 'function') {
+    return doc.getElementsByTagNameNS('*', local) || [];
+  }
+  return doc.getElementsByTagName(local) || [];
 }
 
 /**
@@ -199,7 +244,7 @@ export function parseMPD(xml, baseUrl, ParserImpl) {
   out.live = (mpd.getAttribute('type') || 'static') === 'dynamic';
   out.duration = parseISODuration(mpd.getAttribute('mediaPresentationDuration'));
 
-  const protections = doc.getElementsByTagName('ContentProtection');
+  const protections = elementsNamed(doc, 'ContentProtection');
   for (let i = 0; i < protections.length; i += 1) {
     const el = protections[i];
     const scheme = (el.getAttribute('schemeIdUri') || '').toLowerCase();
@@ -215,7 +260,7 @@ export function parseMPD(xml, baseUrl, ParserImpl) {
     if (name && !out.drmSystems.includes(name)) out.drmSystems.push(name);
   }
 
-  const reps = doc.getElementsByTagName('Representation');
+  const reps = elementsNamed(doc, 'Representation');
   for (let i = 0; i < reps.length; i += 1) {
     const rep = reps[i];
     const adaptation = rep.parentNode;

@@ -205,6 +205,20 @@ export function shouldClick(el) {
 }
 
 /**
+ * Percent-decoded, or the input again when it cannot be decoded. A lone `%` is
+ * not valid encoding and `decodeURIComponent` throws on it; that must neither
+ * take the check down nor wave the link through.
+ * @param {string} value
+ */
+function decodeOrSame(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Should the crawl queue this link?
  * @param {string} href absolute URL
  * @param {string} pageUrl the page it was found on
@@ -237,9 +251,16 @@ export function shouldFollow(href, pageUrl, el) {
     }
   }
   // The query is part of the address: `index.php?action=edit` is an edit page.
-  const address = normalise(`${target.pathname} ${target.search}`).replace(/[-_/?&=:]+/g, ' ');
-  if (matchesAny(address, RISK_WORDS)) {
-    return { follow: false, reason: 'address reads as transactional or destructive' };
+  // Both spellings are checked, because `new URL()` leaves percent-encoding
+  // alone and the server does not: `/account/%64elete` arrives as
+  // `/account/delete`, and reading only the raw form is a check the site's own
+  // encoder walks straight through.
+  const raw = `${target.pathname} ${target.search}`;
+  for (const form of new Set([raw, decodeOrSame(raw)])) {
+    const address = normalise(form).replace(/[-_/?&=:+%]+/g, ' ');
+    if (matchesAny(address, RISK_WORDS)) {
+      return { follow: false, reason: 'address reads as transactional or destructive' };
+    }
   }
   return { follow: true, reason: 'same origin' };
 }

@@ -31,6 +31,10 @@ export function parseXml(text) {
 
     const node = {
       nodeName: name,
+      // The name without its prefix. `<cenc:ContentProtection>` and
+      // `<ContentProtection>` are the same element to a namespace-aware
+      // lookup, and a real DOM treats them that way.
+      localName: name.slice(name.indexOf(':') + 1),
       attributes,
       children: [],
       parentNode: stack.length ? stack[stack.length - 1] : null,
@@ -49,6 +53,9 @@ export function parseXml(text) {
   return {
     documentElement: root,
     getElementsByTagName: (tag) => all.filter((n) => n.nodeName === tag),
+    // Only the wildcard namespace is supported, which is all parseMPD asks
+    // for: it wants every ContentProtection whatever it was prefixed with.
+    getElementsByTagNameNS: (_ns, local) => all.filter((n) => n.localName === local),
   };
 }
 

@@ -426,6 +426,15 @@ const EXPLORE_TABS_HTML = `<!doctype html>
     <!-- a disclosure whose label is destructive: shape says open, words say no -->
     <button type="button" aria-expanded="false" aria-controls="danger">Elimina raccolta</button>
     <div id="danger" hidden></div>
+
+    <!-- A submit button that is not inside its form. \`form="pay"\` makes it
+         the form's button from anywhere in the document, and it wraps an
+         image, which is a positive reason to click. Both of the usual
+         refusals - "submit button" (its type attribute is absent) and "inside
+         a form" (closest('form') is null) - miss it. An icon-only checkout
+         button in a sticky footer is exactly this shape. -->
+    <form id="pay" action="${'/trap/form-owner'}" method="get"></form>
+    <button form="pay" style="cursor:pointer"><img src="${EXPLORE.visiblePath(2)}" width="40" height="40" alt="paga"></button>
   </main>
   <script>
     const fill = (id, html) => { const el = document.getElementById(id); el.hidden = false; if (!el.dataset.filled) { el.innerHTML = html; el.dataset.filled = '1'; } };

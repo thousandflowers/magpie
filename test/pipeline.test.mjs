@@ -169,6 +169,79 @@ test('parseM3U8 does not treat METHOD=NONE as encryption', () => {
   assert.equal(info.encrypted, false);
 });
 
+// METHOD is REQUIRED by RFC 8216. A tag that omits it is malformed input, and
+// malformed input is exactly when a hard boundary has to fail closed: reading
+// the key system only inside `if (method)` let a playlist that names a Widevine
+// licence server parse as clean, and the panel offered every action on it.
+test('a key tag with no METHOD is still encryption', () => {
+  const enc = `#EXTM3U
+#EXT-X-KEY:URI="https://lic.example/k",KEYFORMAT="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
+#EXTINF:6,
+s0.ts
+#EXT-X-ENDLIST
+`;
+  const info = parseM3U8(enc, 'https://v.e.com/nometh.m3u8');
+  assert.equal(info.encrypted, true);
+  assert.deepEqual(info.drmSystems, ['widevine']);
+  assert.ok(!('keys' in info), 'no key material is ever collected');
+});
+
+test('a bare key tag with no attributes at all is still encryption', () => {
+  const info = parseM3U8('#EXTM3U\n#EXT-X-KEY:\n#EXTINF:1,\na.ts\n', 'https://v.e/b.m3u8');
+  assert.equal(info.encrypted, true);
+});
+
+test('METHOD=NONE carrying a key format is malformed, so it fails closed', () => {
+  // METHOD=NONE means "no other attribute is present". One that arrives anyway
+  // is a contradiction, and the safe reading of a contradiction is "protected".
+  const info = parseM3U8(
+    '#EXTM3U\n#EXT-X-KEY:METHOD=NONE,KEYFORMAT="com.widevine.alpha"\n#EXTINF:1,\na.ts\n',
+    'https://v.e/c.m3u8',
+  );
+  assert.equal(info.encrypted, true);
+});
+
+test('a session key is treated exactly like a key', () => {
+  const info = parseM3U8(
+    '#EXTM3U\n#EXT-X-SESSION-KEY:KEYFORMAT="com.microsoft.playready"\n#EXTINF:1,\na.ts\n',
+    'https://v.e/d.m3u8',
+  );
+  assert.equal(info.encrypted, true);
+  assert.deepEqual(info.drmSystems, ['playready']);
+});
+
+/* ------------------------------------------------------------------ *
+ * A filename is built from what the page says its title is
+ * ------------------------------------------------------------------ */
+
+test('a hostile page title cannot hang the panel', () => {
+  // `[.\s]+$` backtracks quadratically over a long run of dots and spaces
+  // that does not end the string, and document.title arrives uncapped from
+  // the page. buildPath runs once per item, so a slow segment is a slow batch.
+  const hostile = '. '.repeat(80000) + 'x';
+  const started = Date.now();
+  const out = sanitizeSegment(hostile);
+  const ms = Date.now() - started;
+  assert.ok(ms < 250, `sanitizeSegment took ${ms}ms on a ${hostile.length}-char title`);
+  assert.ok(out.length <= 100, `expected a capped segment, got ${out.length} chars`);
+});
+
+test('truncation never leaves half a character behind', () => {
+  const out = sanitizeSegment('a' + '\u{1F600}'.repeat(80));
+  const lastUnit = out.charCodeAt(out.length - 1);
+  const lone = lastUnit >= 0xd800 && lastUnit <= 0xdbff;
+  assert.ok(!lone, `segment ends in a lone high surrogate: ${JSON.stringify(out.slice(-3))}`);
+  // The same has to hold when an extension is preserved.
+  const withExt = sanitizeSegment('\u{1F600}'.repeat(80) + '.png');
+  assert.ok(withExt.endsWith('.png'));
+  const unit = withExt.charCodeAt(withExt.length - 5);
+  assert.ok(!(unit >= 0xd800 && unit <= 0xdbff), 'a lone surrogate survived before the extension');
+});
+
+test('an ordinary title is untouched by the cap', () => {
+  assert.equal(sanitizeSegment('Eurasian magpie - Wikipedia'), 'Eurasian magpie - Wikipedia');
+});
+
 test('parseM3U8 rejects anything that is not a playlist', () => {
   assert.equal(parseM3U8('<html>', 'https://e.com/x').variants.length, 0);
   assert.equal(parseM3U8(null, 'https://e.com/x').type, 'hls');
