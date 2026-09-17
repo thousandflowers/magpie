@@ -42,7 +42,7 @@
 
   const DEBOUNCE_MS = 250;
   const MAX_ELEMENTS = 6000;
-  const MAX_PATH_DEPTH = 24;
+  const MAX_PATH_DEPTH = 16;
   const REPEAT_LOOKUP_DEPTH = 6;
   const REPEAT_MIN_SIBLINGS = 3;
   const MAX_COUNT_KEYS = 64;
@@ -51,6 +51,8 @@
   let scanTimer = null;
   let scanning = false;
   let lastHref = location.href;
+  /** Only the top document names the page; an iframe must never reset the tab's index. */
+  const IS_TOP = window === window.top;
   /** class name -> how many elements in the document carry it. */
   let classFrequency = new Map();
 
@@ -287,11 +289,15 @@
     const link = el.closest && el.closest('a[href]');
     if (link) {
       const href = absolute(link.getAttribute('href'));
-      if (href && href !== absolute(src) && looksLikeMedia(href)) {
+      const preview = absolute(src);
+      if (href && href !== preview && looksLikeMedia(href)) {
         push(candidate(href, el, {
           kind: 'image',
           status: 'referenced',
-          upgradeOf: absolute(src),
+          // The panel renders the thumbnail for this tile rather than pulling
+          // the full-size file just to draw a 150px preview. A lazy loader's
+          // placeholder (a data: or blob: URL) is not a preview of anything.
+          previewUrl: /^https?:/i.test(preview) ? preview : '',
           alt: el.getAttribute('alt') || '',
         }));
       }
@@ -531,6 +537,7 @@
    * ---------------------------------------------------------------- */
 
   function reportPage(navigation) {
+    if (!IS_TOP) return;
     send({
       type: MSG.PAGE_INFO,
       url: location.href,
@@ -540,6 +547,7 @@
   }
 
   function onRouteChange() {
+    if (!IS_TOP) return;
     if (location.href === lastHref) return;
     lastHref = location.href;
     send({ type: MSG.PAGE_RESET, url: location.href });
@@ -572,10 +580,9 @@
 
     if (message.type === MSG.CAPTURE_CANVAS) {
       const el = document.querySelector(`[${ID_ATTR}="${CSS.escape(message.elementId || '')}"]`);
-      if (!el) {
-        sendResponse({ ok: false, reason: 'element is gone' });
-        return false;
-      }
+      // The message reaches every frame; only the one holding the element
+      // answers, otherwise an iframe's "not here" wins the race.
+      if (!el) return false;
       try {
         if (el.tagName === 'CANVAS') {
           sendResponse({ ok: true, dataUrl: el.toDataURL('image/png') });
@@ -592,7 +599,8 @@
 
     if (message.type === MSG.HIGHLIGHT_ITEM) {
       const el = document.querySelector(`[${ID_ATTR}="${CSS.escape(message.elementId || '')}"]`);
-      if (el && el.scrollIntoView) {
+      if (!el) return false;
+      if (el.scrollIntoView) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         const previous = el.style.outline;
         el.style.outline = '3px solid #e8552d';

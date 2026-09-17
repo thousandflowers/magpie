@@ -8,7 +8,8 @@
 
 import {
   getTab, addCandidates, resetTab, setPageInfo, deleteTab, itemsOf,
-  findItem, getOptions, setOptions, flushAll, pruneClosedTabs, updateItem, patchTab,
+  findItem, getOptions, setOptions, flushAll, pruneClosedTabs, updateItem, patchTab, serialize,
+  beginNavigation, navigationOutcome,
 } from './store.js';
 import { installNetObserver, flushNow } from './net-observer.js';
 import {
@@ -26,6 +27,13 @@ import { log, warn, error } from '../shared/debug.js';
 
 const PANEL_URL = 'src/panel/panel.html';
 const SEED_KEY = 'panel-seed';
+/**
+ * How long after a navigation 'completes' to wait for the page to report in
+ * before treating the document as one no content script runs on. A pushState
+ * completes in the same instant it starts and its report follows a beat
+ * later; a chrome:// page or a PDF never reports at all.
+ */
+const ORPHAN_GRACE_MS = 1500;
 
 /* ------------------------------------------------------------------ *
  * Panel plumbing
@@ -151,6 +159,39 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   clearCrawl(tabId);
 });
 
+/**
+ * Navigations, seen from the browser side.
+ *
+ * 'loading' fires before the new document issues its first subresource
+ * request and reaches the worker in the same queue as the webRequest events;
+ * it opens a new generation, and nothing is removed. The page's own
+ * document_start message travels through the renderer and can arrive after
+ * the first network batch - it did, and a reset performed there took the
+ * first dozen items with it. Now that message retires only the generations
+ * before its own, so the batch survives whichever arrives first.
+ *
+ * 'complete' settles, after a grace period for the page's own report: a load
+ * that never replaced the document (a download link, a 204) leaves everything
+ * as it was, a same-document route change is handled by the page's message,
+ * and a document no content script could report from (chrome://, a PDF) is
+ * reset here instead.
+ */
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading') {
+    serialize(tabId, () => beginNavigation(tabId));
+    return;
+  }
+  if (changeInfo.status !== 'complete') return;
+  setTimeout(() => serialize(tabId, async () => {
+    const outcome = await navigationOutcome(tabId, tab && tab.url);
+    if (outcome !== 'orphaned') return;
+    if (await isCrawling(tabId)) return;
+    const options = await getOptions();
+    await resetTab(tabId, { url: tab.url, keepHistory: options.keepSessionHistory });
+    refreshPanel(tabId);
+  }), ORPHAN_GRACE_MS);
+});
+
 if (chrome.runtime.onSuspend) {
   chrome.runtime.onSuspend.addListener(() => {
     flushNow();
@@ -173,24 +214,41 @@ const handlers = {
   async [MSG.PAGE_INFO](message, sender) {
     const tabId = tabIdFor(message, sender);
     if (tabId == null) return { ok: false };
-    const crawling = await isCrawling(tabId);
+    if (sender && sender.frameId) return { ok: true }; // only the top document names the page
+    const crawling = message.navigation ? await isCrawling(tabId) : false;
     if (message.navigation && !crawling) {
+      // Retire the previous document's items; keep what the network observer
+      // has already filed under the generation tabs.onUpdated opened.
       const options = await getOptions();
-      await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory });
+      const state = await getTab(tabId);
+      await resetTab(tabId, {
+        url: message.url,
+        keepHistory: options.keepSessionHistory,
+        ...(state.pendingGen != null ? { olderThan: state.pendingGen } : {}),
+      });
     }
     await setPageInfo(tabId, { url: message.url, title: message.title });
     refreshPanel(tabId);
     // A crawl walks the tab from page to page; wiping the index on each hop
     // would throw away exactly what it went to collect.
-    if (message.navigation && crawling) await resumeAfterNavigation(tabId);
+    if (message.navigation && crawling) await resumeAfterNavigation(tabId, message.url);
     return { ok: true };
   },
 
   async [MSG.PAGE_RESET](message, sender) {
     const tabId = tabIdFor(message, sender);
     if (tabId == null) return { ok: false };
+    if (sender && sender.frameId) return { ok: true };
+    // A crawl keeps one index across every page and route it passes through;
+    // a wiki's replaceState on load was moving each page's finds to history.
+    if (await isCrawling(tabId)) {
+      await setPageInfo(tabId, { url: message.url });
+      refreshPanel(tabId);
+      return { ok: true };
+    }
     const options = await getOptions();
-    await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory });
+    // Same document, new route: the player - and its DRM session - persist.
+    await resetTab(tabId, { url: message.url, keepHistory: options.keepSessionHistory, keepFlags: true });
     refreshPanel(tabId);
     return { ok: true };
   },
@@ -265,6 +323,9 @@ const handlers = {
       usesMse: state.usesMse,
       emeRequested: state.emeRequested,
       truncated: state.truncated,
+      historyTruncated: Boolean(state.historyTruncated),
+      trimmed: Boolean(state.trimmed),
+      storageError: state.storageError || '',
       historyCount: (state.history || []).length,
       items: itemsOf(state, { includeHistory: Boolean(message.includeHistory) }),
       options,
@@ -394,11 +455,26 @@ const handlers = {
   },
 };
 
+/**
+ * Messages a page sends about itself are applied in the order they were sent,
+ * through the store's per-tab chain (which the network observer shares).
+ * Without this, the document_start PAGE_INFO (which resets the index) and the
+ * DOMContentLoaded one (which carries the title and is followed by the first
+ * DOM candidates) race through their awaits, and the reset can land last -
+ * wiping the title and everything found so far.
+ */
+const ORDERED = new Set([
+  MSG.PAGE_INFO, MSG.PAGE_RESET, MSG.DOM_CANDIDATES, MSG.MAIN_CANDIDATES,
+  MSG.MSE_DETECTED, MSG.EME_DETECTED, MSG.IMPORT_HAR, MSG.CLEAR_TAB,
+]);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
   const handler = handlers[message.type];
   if (!handler) return false;
-  handler(message, sender)
+  const tabId = tabIdFor(message, sender);
+  const run = () => handler(message, sender);
+  (ORDERED.has(message.type) && tabId != null ? serialize(tabId, run) : run())
     .then(sendResponse)
     .catch((err) => {
       error('handler failed', message.type, err);

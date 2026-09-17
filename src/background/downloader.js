@@ -292,6 +292,8 @@ function finishIfDone(session) {
   if (pending) return;
   session.finished = true;
   log('session finished', session.id, session.counts);
+  // The panel only learns "done" (and gets the sidecar) from this emit.
+  emit(session);
 }
 
 /** Reproducible record of one harvest. */

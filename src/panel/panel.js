@@ -78,6 +78,8 @@ const state = {
   items: [],
   options: {},
   truncated: false,
+  historyTruncated: false,
+  trimmed: false,
   historyCount: 0,
   emeRequested: false,
   selected: new Set(),
@@ -98,6 +100,8 @@ const state = {
   harBodies: new Map(),
   kinds: new Set(['image', 'video', 'audio', 'stream']),
   renderToken: 0,
+  /** A one-line hint for the banner, e.g. that the page needs a reload. */
+  notice: '',
 };
 
 /* ------------------------------------------------------------------ *
@@ -155,7 +159,11 @@ async function refresh({ consumeSeed = false } = {}) {
   state.options = response.options || {};
   state.truncated = Boolean(response.truncated);
   state.historyCount = response.historyCount || 0;
+  state.historyTruncated = Boolean(response.historyTruncated);
+  state.trimmed = Boolean(response.trimmed);
   state.emeRequested = Boolean(response.emeRequested);
+  // The "reload the page" hint has done its job once anything arrives.
+  if (state.notice && state.items.length) state.notice = '';
 
   if (!el.template.value) el.template.value = state.options.filenameTemplate || DEFAULT_TEMPLATE;
   if (state.options.threshold) el.threshold.value = state.options.threshold;
@@ -251,6 +259,8 @@ async function render() {
   state.groups = groups;
 
   el.empty.hidden = items.length > 0;
+  // Tiles from the previous render are about to be dropped; stop watching them.
+  revealObserver.disconnect();
   const fragment = document.createDocumentFragment();
 
   groups.forEach((group, index) => {
@@ -300,11 +310,18 @@ function hostLabel() {
 
 function updateBanner() {
   const notes = [];
+  if (state.notice) notes.push(state.notice);
   if (state.truncated) {
     notes.push(`index capped at ${FILTER_CONFIG.MAX_ITEMS_PER_TAB} items — later finds were dropped`);
   }
   if (state.notClustered) {
     notes.push(`${state.notClustered} items past the clustering limit are listed ungrouped`);
+  }
+  if (state.historyTruncated) {
+    notes.push('session history was dropped — the index outgrew session storage; the current page is intact');
+  }
+  if (state.trimmed) {
+    notes.push('index trimmed to fit storage — grouping falls back to URL shape for this page');
   }
   if (state.emeRequested) {
     notes.push('this page uses DRM — protected media cannot be downloaded');
@@ -671,7 +688,12 @@ async function downloadSynthetic(item, index, total) {
     setProgressText(`capture failed: ${response.reason || 'element is gone'}`);
     return false;
   }
-  const blob = await (await fetch(response.dataUrl)).blob();
+  let blob;
+  try {
+    blob = await (await fetch(response.dataUrl)).blob();
+  } catch {
+    return false;
+  }
   const filename = applyTemplate(el.template.value || DEFAULT_TEMPLATE, {
     ...tokensFor({ ...item, mimeType: blob.type }, {
       pageUrl: state.pageUrl, pageTitle: state.pageTitle, index, total,
@@ -679,6 +701,21 @@ async function downloadSynthetic(item, index, total) {
     basename: item.synthetic === 'canvas' ? 'canvas' : 'inline-svg',
   });
   saveBlob(blob, filename);
+  return true;
+}
+
+/** A data: image is already in hand: write it without the download queue. */
+async function saveDataUrl(item, index, total) {
+  let blob;
+  try {
+    blob = await (await fetch(item.url)).blob();
+  } catch {
+    return false; // a malformed data: URL is one failed file, not a failed batch
+  }
+  saveBlob(blob, applyTemplate(el.template.value || DEFAULT_TEMPLATE, tokensFor(
+    { ...item, mimeType: blob.type || item.mimeType },
+    { pageUrl: state.pageUrl, pageTitle: state.pageTitle, index, total },
+  )));
   return true;
 }
 
@@ -708,19 +745,23 @@ async function downloadItems(items) {
   // Anything already in hand — a canvas capture, or bytes from an imported
   // HAR — is written here; only what genuinely has to be fetched goes to the
   // background queue.
-  const local = downloadable.filter((i) => i.url.startsWith('magpie-') || hasHarBody(i));
+  const inHand = (i) => i.url.startsWith('magpie-') || i.url.startsWith('data:') || hasHarBody(i);
+  const local = downloadable.filter(inHand);
   const network = downloadable.filter((i) => !local.includes(i));
 
   let index = 0;
   let fromHar = 0;
   let captured = 0;
+  let failedLocal = 0;
   for (const item of local) {
     index += 1;
-    if (hasHarBody(item)) {
-      if (saveFromHar(item, index, downloadable.length)) fromHar += 1;
-    } else if (await downloadSynthetic(item, index, downloadable.length)) {
-      captured += 1;
-    }
+    let saved = false;
+    if (hasHarBody(item)) saved = saveFromHar(item, index, downloadable.length);
+    else if (item.url.startsWith('data:')) saved = await saveDataUrl(item, index, downloadable.length);
+    else saved = await downloadSynthetic(item, index, downloadable.length);
+    if (!saved) failedLocal += 1;
+    else if (hasHarBody(item)) fromHar += 1;
+    else captured += 1;
   }
 
   state.localSaved = fromHar + captured;
@@ -728,6 +769,8 @@ async function downloadItems(items) {
     const parts = [];
     if (fromHar) parts.push(`${fromHar} saved from the HAR, no network needed`);
     if (captured) parts.push(`${captured} captured from the page`);
+    if (failedLocal) parts.push(`${failedLocal} could not be saved`);
+    el.progress.hidden = false;
     setProgressText(parts.join(' · ') || 'nothing to save');
     return;
   }
@@ -736,7 +779,7 @@ async function downloadItems(items) {
     type: MSG.DOWNLOAD_ITEMS,
     ids: network.map((i) => i.id),
     template: el.template.value || DEFAULT_TEMPLATE,
-    writeSidecar: true,
+    writeSidecar: Boolean(state.options.writeSidecar),
     groupLabel: state.seedId ? 'similar' : '',
   });
   if (response.ok) {
@@ -863,7 +906,10 @@ el.confirmedOnly.addEventListener('change', render);
 el.includeHistory.addEventListener('change', () => refresh());
 
 el.rescan.addEventListener('click', async () => {
-  await toTab({ type: MSG.SCAN_NOW });
+  const response = await toTab({ type: MSG.SCAN_NOW });
+  // A tab opened before Magpie was installed has no content script until it
+  // is reloaded; say so instead of showing an empty list forever.
+  state.notice = response.ok ? '' : 'Magpie is not running in this tab yet - reload the page, then rescan';
   scheduleRefresh();
 });
 
@@ -997,6 +1043,7 @@ chrome.tabs.onActivated.addListener(async () => {
   const next = await resolveTabId();
   if (next === state.tabId) return;
   state.tabId = next;
+  state.notice = '';
   clearSelection();
   showDetail(null);
   refresh({ consumeSeed: true });

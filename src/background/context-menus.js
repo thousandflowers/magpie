@@ -64,7 +64,7 @@ async function seedFor(info, tabId) {
   if (!src) return { state, seed: null };
   const normalized = normalizeUrl(src, state.pageUrl || undefined);
   const seed =
-    state.items[normalized] ||
+    findItem(state, normalized) ||
     findItem(state, src) ||
     // The DOM scan may not have reached this element yet; synthesise enough
     // of a candidate that the URL terms of the score still work.

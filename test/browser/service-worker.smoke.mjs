@@ -34,11 +34,19 @@ try {
   collectErrors(client, errors);
 
   let worker = null;
+  let targets = [];
   for (let i = 0; i < 40 && !worker; i += 1) {
-    worker = (await listTargets(PORT)).find((t) => t.url.includes('/src/background/service-worker.js'));
+    targets = await listTargets(PORT);
+    worker = targets.find((t) => t.url.includes('/src/background/service-worker.js'));
     if (!worker) await sleep(500);
   }
-  if (!worker) throw new Error('service worker never registered');
+  if (!worker) {
+    // Branded Google Chrome (137+) ignores --load-extension without a word;
+    // the target list and Chrome's own stderr are the only evidence there is.
+    const seen = targets.map((t) => `${t.type} ${t.url}`).join('\n    ') || '(none)';
+    const said = chrome.stderr.join('').trim().slice(-1500) || '(nothing on stderr)';
+    throw new Error(`service worker never registered\n  targets:\n    ${seen}\n  chrome stderr:\n${said}`);
+  }
 
   const session = await attach(client, worker.id);
   await sleep(1500);

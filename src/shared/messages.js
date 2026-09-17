@@ -62,10 +62,20 @@ export const STATUS_RANK = {
 };
 
 const MAX_STR = 4096;
+/**
+ * A data: image is its own bytes, so it cannot be cut to MAX_STR without
+ * becoming a corrupt file. One that would not fit the session-storage index
+ * is dropped instead - truncating it silently is the one wrong answer.
+ */
+export const MAX_DATA_URL = 1024 * 1024;
 const MAX_ITEMS = 2000;
-const MAX_PATH_NODES = 40;
-const MAX_CLASSES = 12;
-const MAX_COUNT_KEYS = 64;
+// Measured on a 414-item category page: the path was 35% of an item's weight
+// and the class counts 21%, at 2.2 KB per item. The engine reads at most the
+// cell, its grid and their ancestors; sixteen levels and eight classes a node
+// cover that with room to spare.
+const MAX_PATH_NODES = 16;
+const MAX_CLASSES = 8;
+const MAX_COUNT_KEYS = 32;
 
 function str(v, max = MAX_STR) {
   return typeof v === 'string' ? v.slice(0, max) : '';
@@ -87,7 +97,9 @@ function bool(v) {
  */
 export function sanitizeCandidate(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const url = str(raw.url);
+  const isData = typeof raw.url === 'string' && raw.url.startsWith('data:');
+  if (isData && raw.url.length > MAX_DATA_URL) return null;
+  const url = isData ? raw.url : str(raw.url);
   if (!url) return null;
 
   const path = Array.isArray(raw.structuralPath)
@@ -136,6 +148,8 @@ export function sanitizeCandidate(raw) {
     alt: str(raw.alt, 256),
     poster: bool(raw.poster),
     protectedReason: str(raw.protectedReason, 128),
+    synthetic: str(raw.synthetic, 16),
+    previewUrl: str(raw.previewUrl),
     origin: str(raw.origin, 64),
     timestamp: num(raw.timestamp),
   };

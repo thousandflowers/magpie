@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Magpie",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Finds every image, video and audio file a page loads or references, groups them by similarity, and downloads them in bulk.",
   "minimum_chrome_version": "120",
   "icons": {

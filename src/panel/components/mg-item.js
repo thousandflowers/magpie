@@ -128,7 +128,11 @@ export class MgItem extends HTMLElement {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.alt = item.alt || '';
-    img.addEventListener('error', () => img.remove(), { once: true });
+    img.addEventListener('error', () => {
+      // A preview that does not load falls back to the file itself, once.
+      if (img.src !== item.url && /^https?:/i.test(item.url)) img.src = item.url;
+      else img.remove();
+    });
     img.addEventListener(
       'load',
       () => {
@@ -137,7 +141,7 @@ export class MgItem extends HTMLElement {
       },
       { once: true },
     );
-    img.src = item.url;
+    img.src = item.previewUrl || item.url;
     box.appendChild(img);
   }
 }
