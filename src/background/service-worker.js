@@ -71,20 +71,28 @@ async function takeSeed(tabId) {
  * Must be called from a user gesture.
  */
 async function openPanel(tabId, seedNormalizedUrl) {
-  await rememberSeed(tabId, seedNormalizedUrl);
+  // `sidePanel.open()` has to run in the same task as the gesture that asked
+  // for it, and an await does not survive one. This used to await two
+  // storage.session round-trips and setOptions first, so open() threw for
+  // every context-menu entry and each one quietly took the window fallback
+  // below - the side panel never appeared from a right-click. The writes still
+  // happen; they are simply not waited on in front of the call.
+  const seeded = rememberSeed(tabId, seedNormalizedUrl);
   if (chrome.sidePanel && chrome.sidePanel.open) {
     try {
-      await chrome.sidePanel.setOptions({
-        tabId,
-        path: PANEL_URL,
-        enabled: true,
-      });
+      chrome.sidePanel.setOptions({ tabId, path: PANEL_URL, enabled: true })
+        .catch((err) => warn('sidePanel.setOptions failed', err));
       await chrome.sidePanel.open({ tabId });
+      // The panel asks for its seed once it loads, and that request is served
+      // from storage - so the write has to have landed by then, just not
+      // before open().
+      await seeded;
       return;
     } catch (err) {
       warn('sidePanel unavailable, falling back to a window', err);
     }
   }
+  await seeded;
   await chrome.windows.create({
     url: chrome.runtime.getURL(`${PANEL_URL}?tabId=${tabId}`),
     type: 'popup',
