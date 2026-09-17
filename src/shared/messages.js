@@ -81,6 +81,27 @@ function str(v, max = MAX_STR) {
   return typeof v === 'string' ? v.slice(0, max) : '';
 }
 
+/**
+ * Schemes a media URL may use. Every URL that survives here can reach
+ * `img.src`, a `fetch` with credentials, or `chrome.downloads.download`, and
+ * candidates arrive from a page: the MAIN-world bridge's token is a namespace
+ * shipped in the CRX, not a secret, so any script on the page can post one. A
+ * scheme that is not a way of fetching bytes has no business in the index.
+ */
+const FETCHABLE = /^(?:https?|data|blob):/i;
+
+/**
+ * The scanner's own placeholders for media that has no URL of its own - a
+ * painted `<canvas>`, an inline `<svg>`. They name an element, are never
+ * fetched, and the panel asks the content script for the bytes instead.
+ */
+const SYNTHETIC = /^magpie-(?:canvas|svg):/i;
+
+/** @param {string} url @returns {string} the URL, or '' when it is not fetchable. */
+function fetchableUrl(url) {
+  return FETCHABLE.test(url) || SYNTHETIC.test(url) ? url : '';
+}
+
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -99,7 +120,7 @@ export function sanitizeCandidate(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const isData = typeof raw.url === 'string' && raw.url.startsWith('data:');
   if (isData && raw.url.length > MAX_DATA_URL) return null;
-  const url = isData ? raw.url : str(raw.url);
+  const url = fetchableUrl(isData ? raw.url : str(raw.url));
   if (!url) return null;
 
   const path = Array.isArray(raw.structuralPath)
@@ -140,7 +161,7 @@ export function sanitizeCandidate(raw) {
     harBody: bool(raw.harBody),
     repeatDepth: Number.isInteger(raw.repeatDepth) && raw.repeatDepth >= 0 ? raw.repeatDepth : -1,
     classCounts,
-    upgradeUrl: str(raw.upgradeUrl),
+    upgradeUrl: fetchableUrl(str(raw.upgradeUrl)),
     upgradeNote: str(raw.upgradeNote, 128),
     frameUrl: str(raw.frameUrl),
     frameOrigin: str(raw.frameOrigin, 256),
@@ -149,7 +170,7 @@ export function sanitizeCandidate(raw) {
     poster: bool(raw.poster),
     protectedReason: str(raw.protectedReason, 128),
     synthetic: str(raw.synthetic, 16),
-    previewUrl: str(raw.previewUrl),
+    previewUrl: fetchableUrl(str(raw.previewUrl)),
     origin: str(raw.origin, 64),
     timestamp: num(raw.timestamp),
   };

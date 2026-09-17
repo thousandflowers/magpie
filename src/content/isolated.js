@@ -74,7 +74,14 @@
     if (!trimmed || trimmed === '#') return '';
     if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
     try {
-      return new URL(trimmed, document.baseURI).href;
+      const resolved = new URL(trimmed, document.baseURI);
+      // A scheme that is not a way of fetching bytes is not a media URL. This
+      // matters most on the bridge from the MAIN world, where the page itself
+      // chooses the string: `new URL()` is happy with `javascript:` and
+      // `chrome-extension:`, and whatever survives here reaches img.src, a
+      // credentialed fetch, or the download queue.
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return '';
+      return resolved.href;
     } catch {
       return '';
     }

@@ -138,6 +138,47 @@
     }
   }
 
+  /**
+   * The body as text, or null once it passes `max` bytes.
+   *
+   * `.text()` buffers the whole body and only then could its length be
+   * checked, so a response with no `content-length` - every chunked one, where
+   * `Number(null)` is 0 and passes the guard - was accumulated in full. On an
+   * endless feed that never settles at all, and the page's memory profile is
+   * then not what it would be without the extension installed. Reading through
+   * the stream lets it be abandoned at the cap instead.
+   *
+   * @param {Response} clone
+   * @param {number} max
+   * @returns {Promise<string|null>}
+   */
+  async function readCapped(clone, max) {
+    if (!clone.body || typeof clone.body.getReader !== 'function') {
+      // No stream to read: fall back, and check after the fact.
+      const text = await clone.text();
+      return text.length > max ? null : text;
+    }
+    const reader = clone.body.getReader();
+    const decoder = new TextDecoder();
+    let total = 0;
+    let out = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > max) {
+          reader.cancel().catch(() => {});
+          return null;
+        }
+        out += decoder.decode(value, { stream: true });
+      }
+      return out + decoder.decode();
+    } catch {
+      return null;
+    }
+  }
+
   function inspectResponse(response) {
     if (!response || typeof response.clone !== 'function') return;
     const contentType = response.headers && response.headers.get('content-type');
@@ -156,10 +197,9 @@
     } catch {
       return; // body already consumed or not cloneable
     }
-    clone
-      .text()
+    readCapped(clone, MAX_JSON_BYTES)
       .then((text) => {
-        if (text.length > MAX_JSON_BYTES) return;
+        if (text == null) return;
         let parsed;
         try {
           parsed = JSON.parse(text);
@@ -292,8 +332,12 @@
    */
   function installEmeHook() {
     if (!navigator.requestMediaKeySystemAccess) return;
+    // Test the live global, not a bound copy: bind() returns a fresh function
+    // with none of the original's own properties, so `__magpie` was always
+    // undefined and every re-assert wrapped the wrapper. Five bfcache
+    // restores meant one key-system call posting five `eme` messages.
+    if (navigator.requestMediaKeySystemAccess.__magpie) return;
     const original = navigator.requestMediaKeySystemAccess.bind(navigator);
-    if (original.__magpie) return;
     const wrapped = function requestMediaKeySystemAccess(keySystem, configs) {
       try {
         post('eme', [], String(keySystem || ''));
@@ -324,6 +368,14 @@
       if (typeof original !== 'function' || original.__magpie) continue;
       const wrapped = function magpieHistory(...args) {
         const result = original.apply(this, args);
+        // A route change resets the index on the other side, so the record of
+        // what has already been reported has to go with it. Keeping `seen`
+        // across routes meant a revisited route re-fetched its JSON, found
+        // every URL already reported, and sent nothing - so the media that
+        // only ever exists in that JSON, which is the whole reason this layer
+        // exists, came back missing.
+        seen.clear();
+        pending = [];
         // location is only updated once the call returns.
         setTimeout(() => post('route', [], location.href), 0);
         return result;
@@ -342,12 +394,21 @@
    * ---------------------------------------------------------------- */
 
   function installAll() {
-    installFetchHook();
-    installXhrHook();
-    installHistoryHook();
-    installObjectUrlHook();
-    installMseHook();
-    installEmeHook();
+    // Each on its own. XHR's, MSE's and the object-URL prototype writes are
+    // bare assignments in a strict-mode IIFE, so a hardened page that freezes
+    // XMLHttpRequest.prototype throws - and used to abort installAll at hook
+    // two, leaving history, blob, MSE and EME uninstalled and SPA route
+    // detection silently dead.
+    for (const install of [
+      installFetchHook, installXhrHook, installHistoryHook,
+      installObjectUrlHook, installMseHook, installEmeHook,
+    ]) {
+      try {
+        install();
+      } catch {
+        /* one page's frozen intrinsic is not the other hooks' problem */
+      }
+    }
   }
 
   installAll();
