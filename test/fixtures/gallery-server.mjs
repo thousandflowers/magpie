@@ -84,6 +84,21 @@ export const HERO_PATH = '/uploads/2024/08/hero.png';
 export const FRAME_IMAGE_PATH = '/uploads/frame/inner.png';
 
 /**
+ * A srcset shaped like the CDNs this extension is actually pointed at: commas
+ * inside the transform segment, and a data: URI placeholder as the 1x entry.
+ * Splitting a srcset on `,` turns both into fragments, and since the srcset
+ * result outranks currentSrc, the fragment *replaces* the working URL.
+ */
+export const SRCSET = {
+  small: '/uploads/cdn/c_fill,w_300/photo.png',
+  large: '/uploads/cdn/c_fill,w_1600/photo.png',
+  placeholder: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==',
+  /** A second image where the widest entry is also the lowest density. */
+  densityThumb: '/uploads/cdn/thumb2x/photo.png',
+  densityFull: '/uploads/cdn/c_fill,w_1200/full.png',
+};
+
+/**
  * Which image a path names: [width, height, seed], or null. Data-driven so
  * adding a family is one line.
  */
@@ -106,6 +121,8 @@ const IMAGE_ROUTES = [
   [/^\/uploads\/explore\/page2-(\d)\.png$/, (m) => [300, 200, 940 + Number(m[1])]],
   [/^\/uploads\/explore\/lazy-(\d+)\.png$/, (m) => [300, 200, 960 + Number(m[1])]],
   [/^\/uploads\/explore\/framed-(\d)\.png$/, (m) => [300, 200, 980 + Number(m[1])]],
+  [/^\/uploads\/cdn\/c_fill,w_(\d+)\/(?:photo|full)\.png$/, (m) => [Number(m[1]), 200, 970]],
+  [/^\/uploads\/cdn\/thumb2x\/photo\.png$/, () => [150, 100, 971]],
   [/^\/uploads\/ad\/banner\.png$/, () => [728, 90, 990]],
   [/^\/uploads\/explore\/behind-(tab|acc|menu|details|domhidden)-(\d)\.png$/,
     (m) => [300, 200, 980 + Number(m[2]) + 'tab acc menu details domhidden'.split(' ').indexOf(m[1]) * 10]],
@@ -155,6 +172,15 @@ function galleryHtml() {
 <body>
   <main class="site-main">
     <img class="hero-image" src="${HERO_PATH}" width="1200" height="400" alt="hero">
+    <!-- srcset the way a real CDN writes it: commas inside the URL, and a
+         data: placeholder. The widest entry is the one to index. -->
+    <img class="cdn-image" alt="cdn"
+         src="${SRCSET.small}"
+         srcset="${SRCSET.placeholder} 1x, ${SRCSET.small} 300w, ${SRCSET.large} 1600w">
+    <!-- density against width: 2x must not outrank 1200w -->
+    <img class="cdn-density" alt="density"
+         src="${SRCSET.densityThumb}"
+         srcset="${SRCSET.densityThumb} 2x, ${SRCSET.densityFull} 1200w">
     <nav class="toolbar">
       ${icons}
     </nav>

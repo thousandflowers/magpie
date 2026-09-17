@@ -854,7 +854,11 @@ el.body.addEventListener('click', (event) => {
 el.body.addEventListener('keydown', (event) => {
   const tile = event.target.closest('mg-item');
   if (!tile || !tile.item) return;
-  if (event.key === ' ' || event.key === 'Enter') {
+  // Space toggles, Enter downloads - and Enter belongs to the document, not to
+  // the tile. Handling it here too selected the tile and then let the event
+  // bubble to the shortcut handler, so pressing Enter on a focused tile
+  // started downloading the whole selection.
+  if (event.key === ' ') {
     event.preventDefault();
     setSelected(tile.item.id, !tile.hasAttribute('selected'));
     updateSelectionUi();
@@ -983,6 +987,10 @@ el.dropzone.addEventListener('drop', (event) => {
 /* Keyboard shortcuts, per spec §8. */
 document.addEventListener('keydown', (event) => {
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName);
+  // A shortcut is a bare key. `event.key` for Cmd-A is 'a', so without this
+  // the panel answered Cmd-A by inverting the focused group's selection and
+  // suppressing the browser's own select-all; Cmd-Enter started a download.
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
   if (event.key === 'Escape') {
     if (state.expandedId) showDetail(null);
     else clearSelection();

@@ -18,7 +18,7 @@ import {
   report, sleep, evaluate,
 } from './e2e-lib.mjs';
 import {
-  startGalleryServer, GALLERY, thumbPath, originalPath, HERO_PATH, FRAME_IMAGE_PATH, imageBytes, dataImageBytes,
+  startGalleryServer, GALLERY, thumbPath, originalPath, HERO_PATH, FRAME_IMAGE_PATH, SRCSET, imageBytes, dataImageBytes,
 } from '../fixtures/gallery-server.mjs';
 
 const PORT = 9335;
@@ -50,6 +50,23 @@ try {
   await sleep(1200); // anything the iframe's arrival broke shows up here
 
   const seen = await getState();
+
+  // A srcset is split on whitespace, not on commas: the URLs a real CDN emits
+  // carry commas inside the transform segment, and every data: URI carries one
+  // too. Splitting on `,` produced relative fragments that resolved into 404s
+  // and, because the srcset result outranks currentSrc, replaced the working
+  // URL - so on a Cloudinary-backed site every <img> yielded a broken address
+  // and the actual file was never reported.
+  check(Boolean(find(seen, (u) => u.endsWith(SRCSET.large))),
+    `the widest srcset entry is indexed whole (${SRCSET.large})`);
+  check(!seen.items.some((i) => /w_1600\/photo\.png$/.test(i.url) && !i.url.startsWith(site.origin)),
+    'no srcset fragment was resolved against the page into a different address');
+  check(!seen.items.some((i) => i.url.includes('base64') && i.url.length < 64),
+    'the data: placeholder was not cut at its comma');
+  // Width beats density: `2x` must not outrank `1200w`.
+  check(Boolean(find(seen, (u) => u.endsWith(SRCSET.densityFull))),
+    `the 1200w entry wins over the 2x one (${SRCSET.densityFull})`);
+
   check(seen.pageUrl === `${site.origin}/`,
     `page URL is the top document, not the iframe (got ${seen.pageUrl})`);
   check(seen.pageTitle === GALLERY.title,

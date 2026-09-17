@@ -285,6 +285,31 @@ try {
   await q.inPanel(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
   check((await q.inPanel(`Number(document.querySelector('#selection b').textContent)`)) === 0, 'Escape clears the selection');
 
+  // Space toggles a tile, Enter downloads the selection. Enter used to do both:
+  // the tile selected itself and then let the event bubble to the shortcut
+  // handler, so pressing Enter on a focused tile started downloading.
+  const enterSelected = await q.inPanel(`(() => {
+    const tile = document.querySelector('mg-item');
+    tile.focus();
+    tile.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    return document.querySelectorAll('mg-item[selected]').length;
+  })()`);
+  check(enterSelected === 0, `Enter on a tile does not select it (${enterSelected} selected)`);
+  const spaceSelected = await q.inPanel(`(() => {
+    const tile = document.querySelector('mg-item');
+    tile.focus();
+    tile.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    return document.querySelectorAll('mg-item[selected]').length;
+  })()`);
+  check(spaceSelected === 1, `Space still toggles the focused tile (${spaceSelected} selected)`);
+  // A shortcut is a bare key: Cmd-A belongs to the browser, not to the panel.
+  const afterCmdA = await q.inPanel(`(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }));
+    return document.querySelectorAll('mg-item[selected]').length;
+  })()`);
+  check(afterCmdA === 1, `Cmd-A is left to the browser (${afterCmdA} selected, expected the 1 from Space)`);
+  await q.inPanel(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
+
   await q.clickTile(EXPLORE.page2Path(1), 2);
   await sleep(300);
   await q.clickButton('select similar to this');
