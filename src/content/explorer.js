@@ -101,7 +101,15 @@
           href: el.tagName === 'A' ? el.href : '',
           target: el.getAttribute('target') || '',
           hasDownloadAttr: el.hasAttribute('download'),
-          insideForm: Boolean(el.closest && el.closest('form')),
+          // `el.form` as well as an ancestor: a control associated by the
+          // `form="id"` attribute submits that form from anywhere in the
+          // document. Without it, a checkout button in a sticky footer was
+          // neither "inside a form" nor - its type attribute being absent - a
+          // "submit button", so wrapping an icon gave it a positive reason to
+          // be clicked. Reading `el.type` instead would be worse: a <button>
+          // with no type attribute is a submit button by spec, so every
+          // ordinary disclosure would be refused.
+          insideForm: Boolean((el.closest && el.closest('form')) || el.form),
           insideLink: Boolean(el.closest && el.closest('a[href]')),
           // The shape of a disclosure: what it says it opens, and whether it already has.
           ariaExpanded: tag === 'summary'

@@ -211,6 +211,48 @@ test('a session key is treated exactly like a key', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * A HAR is a file someone else wrote
+ * ------------------------------------------------------------------ */
+
+test('one malformed entry does not lose the whole import', () => {
+  // mimeType came straight off the archive with only a truthiness guard, and
+  // `.split` on a number throws out of parseHar entirely - so a single odd
+  // entry anywhere in a 10,000-entry capture lost every other entry with it.
+  const har = { log: { entries: [
+    { request: { url: 'https://e.com/a.jpg', headers: [] },
+      response: { status: 200, content: { mimeType: 123, size: 10 }, headers: [] } },
+    { request: { url: 'https://e.com/b.jpg', headers: [] },
+      response: { status: 200, content: { mimeType: {}, size: 10 }, headers: [] } },
+    { request: { url: 'https://e.com/c.jpg', headers: [] },
+      response: { status: 200, content: { mimeType: 'image/jpeg', size: 10 }, headers: [] } },
+  ] } };
+  const out = parseHar(har, { withBodies: false });
+  assert.equal(out.error, '');
+  assert.ok(out.items.length >= 1, 'the well-formed entry survived');
+  assert.ok(out.items.some((i) => i.url.endsWith('c.jpg')));
+});
+
+test('an oversized body is refused without being decoded first', () => {
+  // The size check ran on the decoded bytes, so a 400MB text field was
+  // materialised in the service worker before being thrown away - and a
+  // rejected body counted nothing towards the running total, so an archive
+  // could repeat the allocation as often as it liked.
+  // Measured against a small explicit cap: at the real 64 MB one, the version
+  // that decoded first ran Node out of memory rather than returning null.
+  const cap = 4 * 1024;
+  const oversized = 'A'.repeat(cap * 8);
+  assert.equal(decodeHarBody({ encoding: 'base64', text: oversized }, cap), null,
+    'an oversized base64 body must be refused');
+  assert.equal(decodeHarBody({ text: oversized }, cap), null,
+    'an oversized plain body must be refused');
+  // A body that fits is still decoded.
+  const ok = decodeHarBody({ text: 'hello' }, cap);
+  assert.ok(ok && ok.byteLength === 5);
+  // And the default cap is still the documented one.
+  assert.equal(MAX_BODY_BYTES, 64 * 1024 * 1024);
+});
+
+/* ------------------------------------------------------------------ *
  * A filename is built from what the page says its title is
  * ------------------------------------------------------------------ */
 

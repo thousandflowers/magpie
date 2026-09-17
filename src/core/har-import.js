@@ -38,10 +38,21 @@ export const MAX_TOTAL_BODY_BYTES = 512 * 1024 * 1024;
  * @param {object} content the `response.content` object
  * @returns {Uint8Array|null} null when there is nothing usable
  */
-export function decodeHarBody(content) {
+export function decodeHarBody(content, maxBytes = MAX_BODY_BYTES) {
   if (!content || typeof content !== 'object') return null;
   const text = content.text;
   if (typeof text !== 'string' || !text) return null;
+
+  // Refuse on the raw string, before anything is materialised. The size check
+  // used to run on the decoded bytes, so a 400 MB `text` field was allocated in
+  // the service worker and then thrown away - at the real 64 MB cap that runs
+  // Node out of memory rather than returning null, and an archive could repeat
+  // the allocation as often as it liked.
+  const base64 = String(content.encoding || '').toLowerCase() === 'base64';
+  // base64 carries 3 bytes per 4 characters; UTF-8 spends at least one byte per
+  // UTF-16 unit. Either way the string's length bounds what it can hold.
+  const ceiling = base64 ? Math.ceil((maxBytes + 2) / 3) * 4 + 8 : maxBytes;
+  if (text.length > ceiling) return null;
 
   try {
     if (String(content.encoding || '').toLowerCase() === 'base64') {
@@ -104,8 +115,13 @@ export function parseHar(har, opts = {}) {
       continue;
     }
 
+    // A HAR is a file someone else wrote, so every field is checked for its
+    // type rather than its truthiness. `mimeType` used to reach `.split` as
+    // whatever the archive held; a number there threw out of parseHar and one
+    // odd entry lost every other entry in the capture with it.
+    const declaredMime = res && res.content && res.content.mimeType;
     const mimeType =
-      (res && res.content && res.content.mimeType) ||
+      (typeof declaredMime === 'string' ? declaredMime : '') ||
       (res && headerValue(res.headers, 'content-type')) ||
       '';
     const kind = classify({ url: req.url, mimeType });
@@ -139,7 +155,7 @@ export function parseHar(har, opts = {}) {
       continue;
     }
     if (withBodies && bodyBytes < maxTotal) {
-      const decoded = decodeHarBody(res && res.content);
+      const decoded = decodeHarBody(res && res.content, maxBody);
       if (decoded && decoded.byteLength <= maxBody && bodyBytes + decoded.byteLength <= maxTotal) {
         bodies.set(candidate.normalizedUrl, {
           bytes: decoded,
