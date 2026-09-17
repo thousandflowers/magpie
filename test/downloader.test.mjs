@@ -17,15 +17,28 @@ const started = [];
 const cancelled = [];
 let onChanged = null;
 
+/** What chrome.downloads.search will say about each id. */
+const downloadState = new Map();
+const store = new Map();
+
 globalThis.chrome = {
   downloads: {
     download: async (opts) => {
       const id = nextDownloadId++;
       started.push({ id, ...opts });
+      downloadState.set(id, { id, state: 'in_progress' });
       return id;
     },
     cancel: async (id) => { cancelled.push(id); },
+    search: async ({ id }) => (downloadState.has(id) ? [downloadState.get(id)] : []),
     onChanged: { addListener: (fn) => { onChanged = fn; } },
+  },
+  storage: {
+    session: {
+      get: async (key) => ({ [key]: store.get(key) }),
+      set: async (obj) => { for (const [k, v] of Object.entries(obj)) store.set(k, structuredClone(v)); },
+      remove: async (keys) => { for (const k of [].concat(keys)) store.delete(k); },
+    },
   },
   runtime: { lastError: null },
 };
@@ -111,4 +124,51 @@ test('a real failure is still a failure', async () => {
   assert.equal(session.counts.failed, 1);
   assert.equal(session.errors.length, 1);
   assert.equal(session.finished, true);
+});
+
+/* ------------------------------------------------------------------ *
+ * The worker dies mid-batch
+ *
+ * An MV3 service worker is terminated after 30 seconds without an event, and
+ * chrome.downloads.onChanged does not fire for progress - so one large file
+ * is enough. The queue lived in a module-level Map, so on the next wake the
+ * completion was dropped, pump() was never called again, and the remaining
+ * items never started: the panel sat at "4/50" for good, with no error
+ * anywhere.
+ * ------------------------------------------------------------------ */
+
+test('a batch survives the worker being terminated mid-download', async () => {
+  started.length = 0;
+  onProgress(() => {});
+
+  const { sessionId } = startSession({
+    tabId: 9, items: photos(5), template: 'x/{index}.{ext}', concurrency: 2, context: {},
+  });
+  await settle();
+  assert.equal(started.length, 2, 'two running, three still queued');
+
+  // One finishes while the worker is still alive; one finishes while it is
+  // not, which is the case that used to be lost entirely.
+  complete(started[0].id);
+  downloadState.set(started[0].id, { id: started[0].id, state: 'complete' });
+  await settle();
+  downloadState.set(started[1].id, { id: started[1].id, state: 'complete' });
+
+  // The queue is written down on a short debounce; a real worker dies thirty
+  // seconds in, so waiting for the write is not cheating.
+  await new Promise((r) => setTimeout(r, 400));
+
+  // A fresh module instance is a fresh worker: same storage, no memory.
+  const startedBefore = started.length;
+  const fresh = await import('../src/background/downloader.js?worker=2');
+  fresh.installDownloadListeners();
+  await fresh.resumeSessions();
+  await settle();
+
+  const session = fresh.getSession(sessionId);
+  assert.ok(session, 'the session was not restored at all');
+  assert.equal(session.counts.done, 2,
+    `the completion that landed while the worker was gone was lost (done=${session.counts.done})`);
+  assert.ok(started.length > startedBefore,
+    'no queued item was started after the restart - the batch was stuck for good');
 });

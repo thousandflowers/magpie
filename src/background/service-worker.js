@@ -14,6 +14,7 @@ import {
 import { installNetObserver, flushNow } from './net-observer.js';
 import {
   installDownloadListeners, startSession, stopSession, stopAll, onProgress, reapSessions,
+  resumeSessions,
 } from './downloader.js';
 import { createMenus, installMenuHandlers } from './context-menus.js';
 import { verifyBatch, loadSiteRules } from './upgrade-verify.js';
@@ -118,6 +119,14 @@ function bootstrap() {
     if (result.added) refreshPanel(tabId);
   });
   installDownloadListeners();
+  // The worker is terminated thirty seconds after its last event, and
+  // chrome.downloads.onChanged stays quiet while bytes arrive - so a single
+  // large file outlives us. Pick the queue back up before anything else can
+  // touch it, so a batch that was running carries on rather than stopping
+  // silently half way.
+  resumeSessions().then((n) => {
+    if (n) log('resumed', n, 'download session(s) after a worker restart');
+  });
   installMenuHandlers({ openPanel, refreshPanel });
   onProgress((progress) => {
     chrome.runtime.sendMessage(

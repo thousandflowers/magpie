@@ -68,7 +68,6 @@ const MAX_STR = 4096;
  * is dropped instead - truncating it silently is the one wrong answer.
  */
 export const MAX_DATA_URL = 1024 * 1024;
-const MAX_ITEMS = 2000;
 // Measured on a 414-item category page: the path was 35% of an item's weight
 // and the class counts 21%, at 2.2 KB per item. The engine reads at most the
 // cell, its grid and their ancestors; sixteen levels and eight classes a node
@@ -176,24 +175,15 @@ export function sanitizeCandidate(raw) {
   };
 }
 
-/**
- * Validate a whole bridge message from the MAIN world.
- * @param {unknown} data
- * @returns {{type: string, items: object[]}|null}
+/*
+ * There used to be a `sanitizeBridgeMessage` here: the whole-message validator
+ * for the MAIN-world bridge, exported and imported by nobody. A content script
+ * is a classic script and cannot import a module, so isolated.js rebuilds each
+ * candidate inline instead - which meant the repository looked like it
+ * validated bridge messages in one place and did not. Removed rather than
+ * left as a decoy; the real check is `sanitizeCandidate` above, which the
+ * background applies to everything the bridge forwards.
  */
-export function sanitizeBridgeMessage(data) {
-  if (!data || typeof data !== 'object') return null;
-  if (data.token !== BRIDGE_TOKEN) return null;
-  const type = str(data.type, 64);
-  if (!type) return null;
-  const rawItems = Array.isArray(data.items) ? data.items.slice(0, MAX_ITEMS) : [];
-  const items = [];
-  for (const raw of rawItems) {
-    const c = sanitizeCandidate(raw);
-    if (c) items.push(c);
-  }
-  return { type, items, detail: str(data.detail, 256) };
-}
 
 /** Promise wrapper that never rejects when the receiver is gone. */
 export function sendMessage(message) {
