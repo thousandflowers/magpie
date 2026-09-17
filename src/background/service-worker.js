@@ -210,6 +210,24 @@ function tabIdFor(message, sender) {
   return null;
 }
 
+/**
+ * A crawl belongs to the tab, so only its top frame may drive one. Every
+ * content script runs in every frame, and a subframe that answers speaks for a
+ * page it does not own: its links are same-origin to *itself*, so an ad
+ * frame's "see more" passes `shouldFollow` and the whole tab is navigated onto
+ * the ad network; its "page done" ends the crawl before the real page has
+ * scrolled once. `sender.frameId` comes from the browser, not the message, so
+ * a page cannot forge it.
+ *
+ * @returns {string|null} the top frame's own URL, or null when the sender is
+ *   not the top frame. That URL is what the crawl treats as "this page" -
+ *   never `message.pageUrl`, which is whatever the sender chose to say.
+ */
+function topFrameUrl(sender) {
+  if (!sender || sender.frameId !== 0) return null;
+  return typeof sender.url === 'string' && sender.url ? sender.url : null;
+}
+
 const handlers = {
   async [MSG.PAGE_INFO](message, sender) {
     const tabId = tabIdFor(message, sender);
@@ -430,13 +448,14 @@ const handlers = {
 
   async [EXPLORE_MSG.LINKS](message, sender) {
     const tabId = tabIdFor(message, sender);
-    if (tabId == null) return { ok: false };
-    return { ok: true, ...(await acceptLinks(tabId, message.links, message.pageUrl)) };
+    const pageUrl = topFrameUrl(sender);
+    if (tabId == null || !pageUrl) return { ok: false, reason: 'not the top frame' };
+    return { ok: true, ...(await acceptLinks(tabId, message.links, pageUrl)) };
   },
 
   async [EXPLORE_MSG.PAGE_DONE](message, sender) {
     const tabId = tabIdFor(message, sender);
-    if (tabId == null) return { ok: false };
+    if (tabId == null || !topFrameUrl(sender)) return { ok: false, reason: 'not the top frame' };
     await pageFinished(tabId, message);
     return { ok: true };
   },

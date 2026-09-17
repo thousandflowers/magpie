@@ -26,10 +26,15 @@ const binary = requireChrome('end-to-end flows');
 const downloadDir = mkdtempSync(join(tmpdir(), 'magpie-downloads-'));
 const scratch = mkdtempSync(join(tmpdir(), 'magpie-har-'));
 let site = null;
+let adSite = null;
 let run = null;
 
 try {
-  site = await startGalleryServer();
+  // A second instance on a second port is a genuinely different origin, which
+  // is all it takes to play the third party whose frame sits on the site's own
+  // page. No extra fixture, no network.
+  adSite = await startGalleryServer();
+  site = await startGalleryServer(0, { adOrigin: adSite.origin });
   run = await launchWithExtension(binary, PORT, { downloadDir });
   const { client, errors, worker, extensionId } = run;
   const has = (state, suffix) => state.items.find((i) => i.url.endsWith(suffix)) || null;
@@ -195,6 +200,35 @@ try {
   }
   check(!site.hits.some((h) => h.path === '/trap/expand-delete'), 'a disclosure labelled "Elimina" was not operated');
 
+  /* ================= C3. a third-party frame does not get to steer the crawl ================= */
+
+  // Every content script runs in every frame, so the ad iframe on this page
+  // receives the same "explore this page" message the page does. If a subframe
+  // is allowed to answer, it reports its own location as the page, its own
+  // links pass the same-origin test against *itself*, and the crawl navigates
+  // the whole tab onto the ad network.
+  await openPage(client, `${site.origin}${EXPLORE.framedPath}`);
+  const f = await openPanelFor(client, extensionId, `${site.origin}${EXPLORE.framedPath}*`);
+  await waitFor(async () => has(await f.getState(), EXPLORE.framedImage(EXPLORE.framed)), { label: 'the framed page to be indexed' });
+  check((await f.ask({ type: 'explore-start', tabId: f.tabId })).ok, 'explore starts on the framed page');
+  const framedRun = await waitFor(async () => {
+    const st = await f.ask({ type: 'explore-status', tabId: f.tabId });
+    return st.status && !st.status.running ? st.status : null;
+  }, { label: 'the framed crawl to finish', timeout: 90000, every: 1000 });
+
+  const wentToTheAd = adSite.hits.filter((h) => h.path === EXPLORE.adLandingPath);
+  check(wentToTheAd.length === 0,
+    `the crawl never followed the frame's links (${wentToTheAd.length} hits on ${EXPLORE.adLandingPath})`);
+  const endedOn = (await f.getState()).pageUrl || '';
+  check(endedOn.startsWith(site.origin),
+    `the tab stayed on the site (${endedOn}), never on the ad origin (${adSite.origin})`);
+  // Two real pages exist here. One report per frame would count four.
+  check(framedRun.pages === 2,
+    `each page was counted once, not once per frame (${framedRun.pages} pages)`);
+  // The frame's own media is still the page's media and is still collected.
+  check(Boolean((await f.getState()).items.find((i) => i.url.endsWith(EXPLORE.adImagePath))),
+    "the frame's own image is still indexed - refusing its links is not refusing its media");
+
   /* ================= D. a HAR import, saved without the network ================= */
 
   const captured = range(3).map((n) => ({ name: `photo-${n}.png`, url: `http://127.0.0.1:1/har/photo-${n}.png`, bytes: png(120, 90, 1000 + n) }));
@@ -278,6 +312,7 @@ try {
     run.chrome.kill();
   }
   if (site) await site.close();
+  if (adSite) await adSite.close();
   rmSync(downloadDir, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 }

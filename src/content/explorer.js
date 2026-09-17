@@ -206,6 +206,17 @@
   async function explorePage(limits) {
     running = true;
     stopRequested = false;
+    try {
+      return await walk(limits);
+    } finally {
+      // Whatever went wrong, this page can be explored again. Leaving `running`
+      // true after a throw answers every later request with "already exploring
+      // this page" until the tab is reloaded.
+      running = false;
+    }
+  }
+
+  async function walk(limits) {
     let clicks = 0;
     let dry = 0;
     const deadline = Date.now() + (limits.MAX_PAGE_MS || 45_000);
@@ -248,12 +259,20 @@
 
     const links = collectLinks();
     await ask({ type: MSG.EXPLORE_LINKS, links, pageUrl: location.href });
-    running = false;
     return { clicks, scrolled, links: links.length, stopped: stopRequested };
   }
 
+  // This script runs in every frame, and a crawl belongs to the tab. A subframe
+  // that answers speaks for a page it does not own: its links are same-origin
+  // to *itself*, so an ad frame's "see more" passes the same-origin test and
+  // the tab is navigated onto the ad network. It also reports a page finished,
+  // which ends the crawl before the real page has scrolled once. The scanner
+  // still indexes every frame's media - only the crawl is the top frame's.
+  const IS_TOP = window === window.top;
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message.type !== 'string') return false;
+    if (!IS_TOP) return false;
 
     if (message.type === MSG.EXPLORE_PAGE) {
       if (running) {

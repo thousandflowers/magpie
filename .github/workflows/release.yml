@@ -1,0 +1,96 @@
+name: release
+
+# A tag is the only trigger. Pushing v0.2.0 runs the full test suite against a
+# real Chrome, builds the store zip, and publishes it as a GitHub release.
+# Uploading that zip to the Chrome Web Store stays manual: it needs an account,
+# and a store listing is a thing a person should look at before it goes live.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build, e.g. v0.2.0 (dry run, publishes nothing)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      # The tag is the claim; manifest.json is what users install. If they
+      # disagree the release is wrong whichever one you believe, so stop here
+      # rather than publish a v0.2.0 that installs as 0.1.1.
+      - name: The tag and the manifest must agree
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          manifest="$(node -p "require('./manifest.json').version")"
+          package="$(node -p "require('./package.json').version")"
+          echo "tag=$tag manifest=$manifest package=$package"
+          if [ "$tag" != "v$manifest" ]; then
+            echo "::error::tag $tag does not match manifest.json version $manifest"
+            exit 1
+          fi
+          if [ "$manifest" != "$package" ]; then
+            echo "::error::manifest.json ($manifest) and package.json ($package) disagree"
+            exit 1
+          fi
+
+      - name: Install Chrome for Testing
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+          install-dependencies: true
+
+      - name: Export CHROME_PATH and prove it is a Chrome for Testing build
+        run: |
+          echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
+          version="$("${{ steps.chrome.outputs.chrome-path }}" --version)"
+          echo "$version"
+          case "$version" in
+            *"for Testing"*) ;;
+            *) echo "::error::$version is a branded build and will not load an unpacked extension"; exit 1 ;;
+          esac
+
+      # Nothing ships that has not passed the same suite CI runs on every PR.
+      - name: Full test suite
+        run: npm test
+
+      - name: Build the store zip
+        run: npm run package
+
+      # Unpack the artefact and load *that* into Chrome, not the repo. This is
+      # the only step that proves the zip itself registers a service worker;
+      # a packaging mistake is invisible until someone installs it.
+      - name: The built zip loads and its worker registers
+        run: |
+          version="$(node -p "require('./manifest.json').version")"
+          rm -rf /tmp/magpie-unpacked
+          unzip -q "dist/magpie-$version.zip" -d /tmp/magpie-unpacked
+          MAGPIE_EXTENSION_DIR=/tmp/magpie-unpacked node test/browser/service-worker.smoke.mjs
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./manifest.json').version")"
+          notes=".github/release-notes/${{ github.ref_name }}.md"
+          if [ -f "$notes" ]; then
+            gh release create "${{ github.ref_name }}" "dist/magpie-$version.zip" \
+              --title "Magpie ${{ github.ref_name }}" --notes-file "$notes"
+          else
+            gh release create "${{ github.ref_name }}" "dist/magpie-$version.zip" \
+              --title "Magpie ${{ github.ref_name }}" --generate-notes
+          fi

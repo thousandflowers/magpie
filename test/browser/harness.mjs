@@ -5,41 +5,89 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // fileURLToPath, not URL.pathname: a directory name containing a space would
 // otherwise reach Chrome percent-encoded and the extension would not load.
-export const EXTENSION_DIR = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+//
+// MAGPIE_EXTENSION_DIR points the checks at an unpacked copy instead of the
+// repo. The release workflow unzips the built artefact and sets it, so the
+// smoke test proves the thing that ships rather than the thing it was built
+// from - a file left out of the zip is otherwise invisible until install.
+export const EXTENSION_DIR = process.env.MAGPIE_EXTENSION_DIR
+  ? resolve(process.env.MAGPIE_EXTENSION_DIR)
+  : resolve(fileURLToPath(new URL('../../', import.meta.url)));
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const CANDIDATES = [
-  process.env.CHROME_PATH,
-  join(homedir(), 'Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'),
+// Fixed install locations. Order does not decide the winner - rank() does.
+const INSTALLED = [
   '/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/usr/bin/google-chrome',
   '/usr/bin/chromium',
   '/usr/bin/chromium-browser',
 ];
 
-/** @returns {string|null} */
-export function findChrome() {
-  for (const path of CANDIDATES) {
-    if (path && existsSync(path)) return path;
+// Where @puppeteer/browsers and playwright unpack their downloads, most
+// preferred root first. Revisions are not listed: the tree under each root is
+// walked, so any version found there works and none has to be named here.
+// The two tools number their builds differently (`mac_arm-153.0.8010.47`
+// against `chromium-1234`), so there is no meaningful order *between* roots -
+// only within one, where a plain descending sort does put the newer build
+// first.
+const CACHE_ROOTS = [
+  join(homedir(), '.cache/puppeteer'),
+  join(homedir(), '.cache/ms-playwright'),
+  join(homedir(), 'Library/Caches/ms-playwright'),
+];
+
+const BINARIES = new Set(['Google Chrome for Testing', 'Chromium', 'chrome', 'chromium']);
+
+/**
+ * Branded Google Chrome 137 and later ignores --load-extension without a word:
+ * the browser starts, no service worker registers, and every browser check
+ * reads like a regression in the extension. A Chrome for Testing or plain
+ * Chromium build therefore wins over a branded one wherever both exist.
+ * @param {string} path
+ */
+const isBranded = (path) => /Google Chrome(?:\.app|$)/.test(path) && !path.includes('for Testing');
+
+/** Breadth-limited walk; the deepest hit (puppeteer's) sits 6 levels down. */
+function* walk(dir, depth = 0) {
+  if (depth > 7) return;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // unreadable or vanished mid-walk: not an error, just no Chrome here
   }
-  // Any playwright chromium build, whatever its revision.
-  const cache = join(homedir(), 'Library/Caches/ms-playwright');
-  if (existsSync(cache)) {
-    for (const dir of ['chromium-1234']) {
-      const guess = join(cache, dir, 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing');
-      if (existsSync(guess)) return guess;
-    }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) yield* walk(path, depth + 1);
+    else if (entry.isFile() && BINARIES.has(entry.name)) yield path;
   }
-  return null;
 }
+
+/**
+ * @returns {string|null} the best Chromium on this machine, or null. CHROME_PATH
+ *   wins outright when it points at something that exists, so CI stays in charge.
+ */
+export function findChrome() {
+  if (process.env.CHROME_PATH && existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
+
+  const found = INSTALLED.filter((path) => existsSync(path));
+  for (const root of CACHE_ROOTS) found.push(...[...walk(root)].sort().reverse());
+  if (found.length === 0) return null;
+
+  // A branded build is the last resort: it launches and then quietly refuses
+  // to load the extension, which is worse than no browser at all.
+  return found.find((path) => !isBranded(path)) ?? found[0];
+}
+
 
 /**
  * @param {string} binary
@@ -58,6 +106,15 @@ export function launchChrome(binary, port, extras = [], opts = {}) {
     throw new Error(
       `no extension at ${EXTENSION_DIR} (expected ${manifest}) — the path is wrong, not the extension`,
     );
+  }
+  // Same silent failure from the other direction: the path is right, the
+  // browser is the wrong build. Say so before the worker fails to appear.
+  if (isBranded(binary)) {
+    const complaint = `${binary} is a branded Google Chrome build; 137 and later ignore --load-extension, `
+      + 'so no service worker will register. Install Chrome for Testing '
+      + '(npx @puppeteer/browsers install chrome@stable) or point CHROME_PATH at one.';
+    if (process.env.CI) throw new Error(complaint);
+    console.warn(`WARNING: ${complaint}`);
   }
   const profile = mkdtempSync(join(tmpdir(), 'magpie-profile-'));
   if (opts.downloadDir) {
