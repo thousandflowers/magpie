@@ -369,3 +369,51 @@ test('empty and degenerate inputs do not throw', () => {
   assert.equal(score({ url: '' }, { url: '' }), 0.225);
   assert.equal(cluster([{ url: 'https://a/x.jpg' }], T).length, 1);
 });
+
+/* ------------------------------------------------------------------ *
+ * One side in a known repeated group, the other not
+ *
+ * The docstring promises a hard 0 "only when both do and they belong to
+ * different repeated groups". The code returned 0 whenever the two keys
+ * differed, and an absent key differs from every key - so a tile whose
+ * repeat group the scanner happened not to resolve (a last row with one
+ * item, a wrapper one class apart, a lazily inserted cell) was declared to
+ * belong to a *different* group than its own neighbour, and the grid split.
+ * ------------------------------------------------------------------ */
+
+const gridItem = (url, extra) => ({
+  url,
+  normalizedUrl: url,
+  kind: 'image',
+  mimeType: 'image/jpeg',
+  width: 800,
+  height: 600,
+  structuralPath: [
+    { tag: 'img', classes: ['tile'] },
+    { tag: 'div', classes: ['cell'] },
+    { tag: 'div', classes: ['grid'] },
+    { tag: 'main', classes: [] },
+  ],
+  ...extra,
+});
+
+test('an unresolved repeat group is unknown, not a different group', () => {
+  const a = gridItem('https://e.com/p/sunset.jpg', { inRepeatedGroup: true, repeatDepth: 1 });
+  const b = gridItem('https://e.com/p/mountain.jpg', { inRepeatedGroup: false, repeatDepth: -1 });
+  const structural = structuralSimilarity(a, b);
+  assert.ok(structural > 0,
+    `identical DOM paths scored ${structural}; one missing repeat key must not mean "different group"`);
+  assert.equal(cluster([a, b], DEFAULT_THRESHOLD).length, 1, 'the grid was split in two');
+});
+
+test('two genuinely different repeated groups still score a hard 0', () => {
+  const carousel = gridItem('https://e.com/p/hero.jpg', { inRepeatedGroup: true, repeatDepth: 1 });
+  carousel.structuralPath = [
+    { tag: 'img', classes: ['slide'] },
+    { tag: 'li', classes: ['slide-item'] },
+    { tag: 'ul', classes: ['carousel'] },
+    { tag: 'main', classes: [] },
+  ];
+  const tile = gridItem('https://e.com/p/one.jpg', { inRepeatedGroup: true, repeatDepth: 1 });
+  assert.equal(structuralSimilarity(carousel, tile), 0);
+});

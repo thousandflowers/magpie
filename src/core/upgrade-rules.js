@@ -247,6 +247,13 @@ export function siteUpgrades(url, rules) {
     if (!re.test(u.href)) continue;
     const next = u.href.replace(re, rule.replace);
     if (next && next !== u.href) {
+      // A rule is data, and data can be wrong. genericUpgrades validates what
+      // it produces; this did not, and the result is fetched with
+      // `credentials: 'include'` from a context holding <all_urls>. A rule may
+      // still move the host - that is what the redd.it rule is for - but not
+      // the scheme.
+      const parsed = toURL(next);
+      if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) continue;
       out.push({
         url: next,
         verify: rule.verify !== false,

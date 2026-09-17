@@ -64,7 +64,22 @@ npm run test:flows # SPA feeds, a stream, DRM, a route change, a worker restart,
 npm run test:dash  # DRM boundary checked in the real panel (18 assertions)
 npm run gallery    # serve the fixture site on :8765 to try the extension by hand
 npm run screenshots
+npm run package            # dist/magpie-<version>.zip, the Chrome Web Store upload
+npm run screenshots:store  # docs/store/*.png at the 1280x800 the store demands
 ```
+
+`npm run package` is a set of refusals rather than a build: it stops if
+`manifest.json` and `package.json` disagree on the version, if the manifest
+names a file that does not exist or one the zip would leave out, or if any
+remote script, stylesheet or font appears anywhere in the source. Everything
+the listing needs is written out in [STORE.md](STORE.md); the privacy policy
+it links to is [PRIVACY.md](PRIVACY.md).
+
+The browser checks want a **Chrome for Testing** build and find one on their
+own under `~/.cache/puppeteer` or playwright's cache; `npx @puppeteer/browsers
+install chrome@stable` puts one there. A branded Google Chrome is used only as
+a last resort and says so, because 137 and later ignore `--load-extension`
+without a word.
 
 `package.json` declares no dependencies. The browser checks look for a Chromium
 (`CHROME_PATH` points at one) and skip with a notice if none is found - except
@@ -224,7 +239,7 @@ it.
 - **No live-stream recording.** A live playlist is reported as live; capturing it is `yt-dlp`'s job.
 - **Nothing the browser itself cannot fetch.** A cross-origin tainted `<canvas>` is marked `unavailable`.
 - **No auto-download, ever.** Nothing is fetched without a click.
-- **No telemetry, no analytics, no remote calls.** Beyond fetching what you asked for and `HEAD`-checking upgrades, it makes no network requests. No CDN, no web fonts.
+- **No telemetry, no analytics, no remote calls.** The source tree contains no absolute `http(s)` URL at all: no CDN, no web fonts, no server of ours. It makes exactly three kinds of request, each to the site the media is on: the files you selected, a `HEAD` check on a candidate full-size URL, and the thumbnails the panel draws - a tile fetches its own image as it scrolls into view, which is how it comes to have a picture on it. That third one is automatic, unlike the other two, and is worth stating rather than implying.
 - **No account, login or sync.** The index lives in session storage and dies with the tab.
 - **Clustering is capped** at 1200 items per view (the score matrix is quadratic). The remainder is listed ungrouped and the panel says so rather than hiding it.
 - **A hero image with the same dimensions as the grid below it will cluster with that grid.** Magpie detects that the two sit in different repeated structures and zeroes the structural term - but the remaining four terms floor at 0.4625 for two images sharing a host, a directory and a file type, so the dimension term alone carries the rest of the way to 0.62. At identical dimensions the pair scores 0.6625 and merges. That is a limit of the current term weights, not of the repeated-group test; `strict` separates them.
@@ -238,10 +253,11 @@ it.
 Stated plainly rather than implied by silence:
 
 - **Arc, Dia, Brave and Edge have not been launched.** Nothing Chrome-only is used beyond `chrome.sidePanel`, which has a popup fallback, but that is an argument, not a test.
-- **The panel has been driven by a script, not by a person.** The end-to-end run selects a group, presses download, reads the progress line and checks the files; nobody has used it interactively for a long session, so keyboard flow, scroll behaviour under load and hover states are unproven in practice.
+- **The panel has been driven by a script, not by a person.** The end-to-end run selects a group, presses download, reads the progress line, checks the files, and puts each shortcut through the real panel; nobody has used it interactively for a long session, so hover states and behaviour under an hour of scrolling are unproven in practice.
+- **The side panel has never been opened from a right-click in a real browser.** `sidePanel.open()` has to run in the gesture's own task, and until recently this awaited two storage round-trips first, so every context-menu entry silently fell back to a popup window. The ordering is fixed and argued in DECISIONS.md, but no test presses a native context menu - see the entry below.
 - **HAR import is tested against a synthetic HAR** - built from real image files, and proven to save them with the web server stopped, but not against an archive exported by DevTools itself.
 - **The explorer has walked one real site.** A Wikimedia Commons category, headless: 18 pages in 150 s, subcategories and the videos/quality-images categories first, 1,800+ items, no trap touched, no loop. Pixabay, Unsplash and Openverse refused the headless browser (403) before it saw a page, so infinite-scroll sites behind bot protection remain unverified, as does any site where you are signed in.
-- **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests, a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel - not against Netflix or Spotify.
+- **No commercial DRM player has been visited.** The DRM path is verified with hand-written HLS and DASH manifests - including the spellings a packager is free to use and this parser once missed, a namespace-prefixed `<cenc:ContentProtection>` and an `#EXT-X-KEY` with no `METHOD` - a simulated `requestMediaKeySystemAccess` call, and assertions read out of the real panel. Not against Netflix or Spotify.
 - **No DASH manifest has been fetched from a live CDN.** HLS has (Apple's public test stream, downloaded for real with the generated command).
 - **The 122-item bulk download was measured once**, on localhost. Behaviour against a rate-limiting CDN rests on the retry/backoff code, which has not met a real 429.
 - **The context menu has not been driven mechanically.** Its two-click path shares the download queue and the similarity engine with the panel, both of which the end-to-end run exercises, but no test right-clicks an image.

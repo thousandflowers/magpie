@@ -24,6 +24,38 @@ export const AUTH_KEYS = new Set([
   'goog-signature', 'x-goog-signature', 'ci', 'oh', 'oe', '_nc_sid', '_nc_ohc',
 ]);
 
+/**
+ * Query keys that carry no bytes: campaign tags and click identifiers.
+ *
+ * The rule used to be the other way round - keep a short list of recognised
+ * size- and auth-bearing keys, drop everything else - and that quietly lost
+ * media. The key is the per-tab dedupe key, and a merge keeps the first URL
+ * and throws the second away, so `getimage?id=1001` and `getimage?id=2002`
+ * became one photo. `?id=`, `?file=`, `?path=`, `?src=` and `?v=` are how the
+ * CDNs and gallery scripts this extension is pointed at name an asset in the
+ * first place.
+ *
+ * Losing an asset is worse than showing the same one twice, so an unknown key
+ * is kept. Only what is known to be noise is dropped, by exact name or by the
+ * two prefixes analytics has standardised on.
+ */
+const TRACKING_KEYS = new Set([
+  'fbclid', 'gclid', 'dclid', 'gbraid', 'wbraid', 'msclkid', 'yclid', 'twclid',
+  'ttclid', 'igshid', 'igsh', 'mc_cid', 'mc_eid', 'mkt_tok', 'srsltid',
+  'ref_src', 'ref_url', 'referrer', 'trk', 'spm', 'scm', 'cmpid', 'icid',
+]);
+
+/** Prefixes that mark a key as analytics: `utm_source`, `_ga`, `_hsenc`. */
+const TRACKING_PREFIXES = ['utm_', '_'];
+
+/** @param {string} lowerKey */
+function isTracking(lowerKey) {
+  if (TRACKING_KEYS.has(lowerKey)) return true;
+  // `_nc_sid` and friends are auth-bearing on some CDNs: dropping them 404s.
+  if (AUTH_KEYS.has(lowerKey)) return false;
+  return TRACKING_PREFIXES.some((prefix) => lowerKey.startsWith(prefix));
+}
+
 const HEXISH_RE = /^[0-9a-f]{8,}$/i;
 const BASEISH_RE = /^[A-Za-z0-9_-]{12,}$/;
 const DIGITS_RE = /^\d+$/;
@@ -91,7 +123,7 @@ export function normalizeUrl(raw, base) {
   const kept = [];
   for (const [k, v] of u.searchParams) {
     const lk = k.toLowerCase();
-    if (SIZE_BEARING_KEYS.has(lk) || AUTH_KEYS.has(lk)) kept.push([lk, v]);
+    if (!isTracking(lk)) kept.push([lk, v]);
   }
   kept.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : 1));
   u.search = '';

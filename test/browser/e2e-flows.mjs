@@ -26,10 +26,15 @@ const binary = requireChrome('end-to-end flows');
 const downloadDir = mkdtempSync(join(tmpdir(), 'magpie-downloads-'));
 const scratch = mkdtempSync(join(tmpdir(), 'magpie-har-'));
 let site = null;
+let adSite = null;
 let run = null;
 
 try {
-  site = await startGalleryServer();
+  // A second instance on a second port is a genuinely different origin, which
+  // is all it takes to play the third party whose frame sits on the site's own
+  // page. No extra fixture, no network.
+  adSite = await startGalleryServer();
+  site = await startGalleryServer(0, { adOrigin: adSite.origin });
   run = await launchWithExtension(binary, PORT, { downloadDir });
   const { client, errors, worker, extensionId } = run;
   const has = (state, suffix) => state.items.find((i) => i.url.endsWith(suffix)) || null;
@@ -194,6 +199,37 @@ try {
     check(got === EXPLORE.behind[kind], `images behind the ${kind} control were revealed and fetched (${got}/${EXPLORE.behind[kind]})`);
   }
   check(!site.hits.some((h) => h.path === '/trap/expand-delete'), 'a disclosure labelled "Elimina" was not operated');
+  check(!site.hits.some((h) => h.path === '/trap/form-owner'),
+    'a submit button that owns its form from outside it was not pressed');
+
+  /* ================= C3. a third-party frame does not get to steer the crawl ================= */
+
+  // Every content script runs in every frame, so the ad iframe on this page
+  // receives the same "explore this page" message the page does. If a subframe
+  // is allowed to answer, it reports its own location as the page, its own
+  // links pass the same-origin test against *itself*, and the crawl navigates
+  // the whole tab onto the ad network.
+  await openPage(client, `${site.origin}${EXPLORE.framedPath}`);
+  const f = await openPanelFor(client, extensionId, `${site.origin}${EXPLORE.framedPath}*`);
+  await waitFor(async () => has(await f.getState(), EXPLORE.framedImage(EXPLORE.framed)), { label: 'the framed page to be indexed' });
+  check((await f.ask({ type: 'explore-start', tabId: f.tabId })).ok, 'explore starts on the framed page');
+  const framedRun = await waitFor(async () => {
+    const st = await f.ask({ type: 'explore-status', tabId: f.tabId });
+    return st.status && !st.status.running ? st.status : null;
+  }, { label: 'the framed crawl to finish', timeout: 90000, every: 1000 });
+
+  const wentToTheAd = adSite.hits.filter((h) => h.path === EXPLORE.adLandingPath);
+  check(wentToTheAd.length === 0,
+    `the crawl never followed the frame's links (${wentToTheAd.length} hits on ${EXPLORE.adLandingPath})`);
+  const endedOn = (await f.getState()).pageUrl || '';
+  check(endedOn.startsWith(site.origin),
+    `the tab stayed on the site (${endedOn}), never on the ad origin (${adSite.origin})`);
+  // Two real pages exist here. One report per frame would count four.
+  check(framedRun.pages === 2,
+    `each page was counted once, not once per frame (${framedRun.pages} pages)`);
+  // The frame's own media is still the page's media and is still collected.
+  check(Boolean((await f.getState()).items.find((i) => i.url.endsWith(EXPLORE.adImagePath))),
+    "the frame's own image is still indexed - refusing its links is not refusing its media");
 
   /* ================= D. a HAR import, saved without the network ================= */
 
@@ -249,6 +285,31 @@ try {
   await q.inPanel(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
   check((await q.inPanel(`Number(document.querySelector('#selection b').textContent)`)) === 0, 'Escape clears the selection');
 
+  // Space toggles a tile, Enter downloads the selection. Enter used to do both:
+  // the tile selected itself and then let the event bubble to the shortcut
+  // handler, so pressing Enter on a focused tile started downloading.
+  const enterSelected = await q.inPanel(`(() => {
+    const tile = document.querySelector('mg-item');
+    tile.focus();
+    tile.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    return document.querySelectorAll('mg-item[selected]').length;
+  })()`);
+  check(enterSelected === 0, `Enter on a tile does not select it (${enterSelected} selected)`);
+  const spaceSelected = await q.inPanel(`(() => {
+    const tile = document.querySelector('mg-item');
+    tile.focus();
+    tile.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    return document.querySelectorAll('mg-item[selected]').length;
+  })()`);
+  check(spaceSelected === 1, `Space still toggles the focused tile (${spaceSelected} selected)`);
+  // A shortcut is a bare key: Cmd-A belongs to the browser, not to the panel.
+  const afterCmdA = await q.inPanel(`(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }));
+    return document.querySelectorAll('mg-item[selected]').length;
+  })()`);
+  check(afterCmdA === 1, `Cmd-A is left to the browser (${afterCmdA} selected, expected the 1 from Space)`);
+  await q.inPanel(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
+
   await q.clickTile(EXPLORE.page2Path(1), 2);
   await sleep(300);
   await q.clickButton('select similar to this');
@@ -278,6 +339,7 @@ try {
     run.chrome.kill();
   }
   if (site) await site.close();
+  if (adSite) await adSite.close();
   rmSync(downloadDir, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 }

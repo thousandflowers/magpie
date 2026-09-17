@@ -70,7 +70,13 @@ const NON_MEDIA_EXT_RE =
  */
 export function extOf(url) {
   if (typeof url !== 'string') return '';
-  const m = EXT_RE.exec(url);
+  // The fragment never reaches the server, so it cannot say anything about
+  // what comes back - but EXT_RE matched anywhere in the string, so a page
+  // could write `<a href="https://elsewhere.example/do-something#x.m3u8">`
+  // and have the panel treat it as a stream, whose drawer then fetches it.
+  // The query stays: it is sent, and `?file=photo.jpg` is a real signal.
+  const addressable = url.split('#', 1)[0];
+  const m = EXT_RE.exec(addressable);
   if (m) return m[1].toLowerCase();
   // Fall back to a plain path-tail read for extensions we do not know.
   const path = url.split(/[?#]/, 1)[0];

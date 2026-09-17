@@ -23,7 +23,12 @@ test('normalizeUrl keeps signature params so a pre-signed URL still resolves', (
   const out = normalizeUrl(signed);
   assert.ok(out.includes('x-amz-signature=deadbeef'));
   assert.ok(out.includes('x-amz-expires=900'));
-  assert.ok(!out.includes('foo=1'));
+  // `foo=1` used to be dropped here, and that assertion was wrong. This value
+  // is the per-tab dedupe key, and an unrecognised key is far more often what
+  // selects the asset than it is noise - so dropping it merged two different
+  // photos and threw the second one's URL away. Unknown keys are kept now;
+  // known tracking keys are still dropped, which the tests below cover.
+  assert.ok(out.includes('foo=1'));
 });
 
 test('normalizeUrl is stable across equivalent spellings', () => {
@@ -133,4 +138,45 @@ test('toURL never throws', () => {
   assert.equal(toURL('::::'), null);
   assert.equal(toURL(undefined), null);
   assert.ok(toURL('https://e.com') instanceof URL);
+});
+
+/* ------------------------------------------------------------------ *
+ * The dedupe key must not merge two different assets
+ *
+ * The key is what the per-tab index is stored under, and a merge keeps the
+ * first URL and throws the second away. Dropping every query key that is not
+ * recognised as size- or auth-bearing means `?id=1001` and `?id=2002` share a
+ * key, and one of the two photos is silently never offered. An unknown key is
+ * far more often the thing that selects the asset than it is noise.
+ * ------------------------------------------------------------------ */
+
+test('an opaque asset selector keeps two assets apart', () => {
+  const a = normalizeUrl('https://cdn.example.com/getimage?id=1001');
+  const b = normalizeUrl('https://cdn.example.com/getimage?id=2002');
+  assert.notEqual(a, b, 'two different photos collapsed into one key');
+});
+
+test('the common asset-selector spellings all survive', () => {
+  const base = 'https://site.com/photo.php';
+  for (const key of ['file', 'path', 'src', 'image', 'p', 'v', 'page']) {
+    assert.notEqual(
+      normalizeUrl(`${base}?${key}=a.jpg`),
+      normalizeUrl(`${base}?${key}=b.jpg`),
+      `?${key}= was dropped, so two assets share a key`,
+    );
+  }
+});
+
+test('tracking parameters are still dropped', () => {
+  const bare = normalizeUrl('https://e.com/a.jpg');
+  for (const q of ['utm_source=x&utm_medium=y', 'fbclid=abc', 'gclid=abc', '_ga=1', 'igshid=z']) {
+    assert.equal(normalizeUrl(`https://e.com/a.jpg?${q}`), bare, `${q} survived`);
+  }
+});
+
+test('a tracking parameter beside a real one drops only itself', () => {
+  assert.equal(
+    normalizeUrl('https://e.com/get?id=7&utm_source=news'),
+    normalizeUrl('https://e.com/get?id=7'),
+  );
 });

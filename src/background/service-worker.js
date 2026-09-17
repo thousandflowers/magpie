@@ -14,6 +14,7 @@ import {
 import { installNetObserver, flushNow } from './net-observer.js';
 import {
   installDownloadListeners, startSession, stopSession, stopAll, onProgress, reapSessions,
+  resumeSessions,
 } from './downloader.js';
 import { createMenus, installMenuHandlers } from './context-menus.js';
 import { verifyBatch, loadSiteRules } from './upgrade-verify.js';
@@ -71,20 +72,28 @@ async function takeSeed(tabId) {
  * Must be called from a user gesture.
  */
 async function openPanel(tabId, seedNormalizedUrl) {
-  await rememberSeed(tabId, seedNormalizedUrl);
+  // `sidePanel.open()` has to run in the same task as the gesture that asked
+  // for it, and an await does not survive one. This used to await two
+  // storage.session round-trips and setOptions first, so open() threw for
+  // every context-menu entry and each one quietly took the window fallback
+  // below - the side panel never appeared from a right-click. The writes still
+  // happen; they are simply not waited on in front of the call.
+  const seeded = rememberSeed(tabId, seedNormalizedUrl);
   if (chrome.sidePanel && chrome.sidePanel.open) {
     try {
-      await chrome.sidePanel.setOptions({
-        tabId,
-        path: PANEL_URL,
-        enabled: true,
-      });
+      chrome.sidePanel.setOptions({ tabId, path: PANEL_URL, enabled: true })
+        .catch((err) => warn('sidePanel.setOptions failed', err));
       await chrome.sidePanel.open({ tabId });
+      // The panel asks for its seed once it loads, and that request is served
+      // from storage - so the write has to have landed by then, just not
+      // before open().
+      await seeded;
       return;
     } catch (err) {
       warn('sidePanel unavailable, falling back to a window', err);
     }
   }
+  await seeded;
   await chrome.windows.create({
     url: chrome.runtime.getURL(`${PANEL_URL}?tabId=${tabId}`),
     type: 'popup',
@@ -110,6 +119,14 @@ function bootstrap() {
     if (result.added) refreshPanel(tabId);
   });
   installDownloadListeners();
+  // The worker is terminated thirty seconds after its last event, and
+  // chrome.downloads.onChanged stays quiet while bytes arrive - so a single
+  // large file outlives us. Pick the queue back up before anything else can
+  // touch it, so a batch that was running carries on rather than stopping
+  // silently half way.
+  resumeSessions().then((n) => {
+    if (n) log('resumed', n, 'download session(s) after a worker restart');
+  });
   installMenuHandlers({ openPanel, refreshPanel });
   onProgress((progress) => {
     chrome.runtime.sendMessage(
@@ -208,6 +225,24 @@ function tabIdFor(message, sender) {
   if (Number.isInteger(message.tabId)) return message.tabId;
   if (sender && sender.tab && Number.isInteger(sender.tab.id)) return sender.tab.id;
   return null;
+}
+
+/**
+ * A crawl belongs to the tab, so only its top frame may drive one. Every
+ * content script runs in every frame, and a subframe that answers speaks for a
+ * page it does not own: its links are same-origin to *itself*, so an ad
+ * frame's "see more" passes `shouldFollow` and the whole tab is navigated onto
+ * the ad network; its "page done" ends the crawl before the real page has
+ * scrolled once. `sender.frameId` comes from the browser, not the message, so
+ * a page cannot forge it.
+ *
+ * @returns {string|null} the top frame's own URL, or null when the sender is
+ *   not the top frame. That URL is what the crawl treats as "this page" -
+ *   never `message.pageUrl`, which is whatever the sender chose to say.
+ */
+function topFrameUrl(sender) {
+  if (!sender || sender.frameId !== 0) return null;
+  return typeof sender.url === 'string' && sender.url ? sender.url : null;
 }
 
 const handlers = {
@@ -430,13 +465,14 @@ const handlers = {
 
   async [EXPLORE_MSG.LINKS](message, sender) {
     const tabId = tabIdFor(message, sender);
-    if (tabId == null) return { ok: false };
-    return { ok: true, ...(await acceptLinks(tabId, message.links, message.pageUrl)) };
+    const pageUrl = topFrameUrl(sender);
+    if (tabId == null || !pageUrl) return { ok: false, reason: 'not the top frame' };
+    return { ok: true, ...(await acceptLinks(tabId, message.links, pageUrl)) };
   },
 
   async [EXPLORE_MSG.PAGE_DONE](message, sender) {
     const tabId = tabIdFor(message, sender);
-    if (tabId == null) return { ok: false };
+    if (tabId == null || !topFrameUrl(sender)) return { ok: false, reason: 'not the top frame' };
     await pageFinished(tabId, message);
     return { ok: true };
   },

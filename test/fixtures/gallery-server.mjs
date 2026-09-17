@@ -84,6 +84,21 @@ export const HERO_PATH = '/uploads/2024/08/hero.png';
 export const FRAME_IMAGE_PATH = '/uploads/frame/inner.png';
 
 /**
+ * A srcset shaped like the CDNs this extension is actually pointed at: commas
+ * inside the transform segment, and a data: URI placeholder as the 1x entry.
+ * Splitting a srcset on `,` turns both into fragments, and since the srcset
+ * result outranks currentSrc, the fragment *replaces* the working URL.
+ */
+export const SRCSET = {
+  small: '/uploads/cdn/c_fill,w_300/photo.png',
+  large: '/uploads/cdn/c_fill,w_1600/photo.png',
+  placeholder: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==',
+  /** A second image where the widest entry is also the lowest density. */
+  densityThumb: '/uploads/cdn/thumb2x/photo.png',
+  densityFull: '/uploads/cdn/c_fill,w_1200/full.png',
+};
+
+/**
  * Which image a path names: [width, height, seed], or null. Data-driven so
  * adding a family is one line.
  */
@@ -105,6 +120,10 @@ const IMAGE_ROUTES = [
   [/^\/uploads\/explore\/lightbox\.png$/, () => [1200, 800, 930]],
   [/^\/uploads\/explore\/page2-(\d)\.png$/, (m) => [300, 200, 940 + Number(m[1])]],
   [/^\/uploads\/explore\/lazy-(\d+)\.png$/, (m) => [300, 200, 960 + Number(m[1])]],
+  [/^\/uploads\/explore\/framed-(\d)\.png$/, (m) => [300, 200, 980 + Number(m[1])]],
+  [/^\/uploads\/cdn\/c_fill,w_(\d+)\/(?:photo|full)\.png$/, (m) => [Number(m[1]), 200, 970]],
+  [/^\/uploads\/cdn\/thumb2x\/photo\.png$/, () => [150, 100, 971]],
+  [/^\/uploads\/ad\/banner\.png$/, () => [728, 90, 990]],
   [/^\/uploads\/explore\/behind-(tab|acc|menu|details|domhidden)-(\d)\.png$/,
     (m) => [300, 200, 980 + Number(m[2]) + 'tab acc menu details domhidden'.split(' ').indexOf(m[1]) * 10]],
 ];
@@ -153,6 +172,15 @@ function galleryHtml() {
 <body>
   <main class="site-main">
     <img class="hero-image" src="${HERO_PATH}" width="1200" height="400" alt="hero">
+    <!-- srcset the way a real CDN writes it: commas inside the URL, and a
+         data: placeholder. The widest entry is the one to index. -->
+    <img class="cdn-image" alt="cdn"
+         src="${SRCSET.small}"
+         srcset="${SRCSET.placeholder} 1x, ${SRCSET.small} 300w, ${SRCSET.large} 1600w">
+    <!-- density against width: 2x must not outrank 1200w -->
+    <img class="cdn-density" alt="density"
+         src="${SRCSET.densityThumb}"
+         srcset="${SRCSET.densityThumb} 2x, ${SRCSET.densityFull} 1200w">
     <nav class="toolbar">
       ${icons}
     </nav>
@@ -300,6 +328,21 @@ export const EXPLORE = {
    */
   behind: { tab: 4, acc: 2, menu: 2, details: 1, domhidden: 2 },
   behindPath: (kind, n) => `/uploads/explore/behind-${kind}-${n}.png`,
+  /**
+   * Fourth page: one the site owns, carrying a third-party iframe - an ad, a
+   * comment widget, an embedded player. The frame comes from a second instance
+   * of this server on another port, so it is genuinely cross-origin, and every
+   * link it offers points back at its own origin. A crawl that lets a subframe
+   * speak for the page follows those links and takes the whole tab off the
+   * site.
+   */
+  framedPath: '/explore/framed',
+  framed: 2,
+  framedImage: (n) => `/uploads/explore/framed-${n}.png`,
+  /** Served by the *ad* origin, never the site's. */
+  adPath: '/ad',
+  adImagePath: '/uploads/ad/banner.png',
+  adLandingPath: '/ad/landing',
 };
 
 const EXPLORE_1_HTML = `<!doctype html>
@@ -409,6 +452,15 @@ const EXPLORE_TABS_HTML = `<!doctype html>
     <!-- a disclosure whose label is destructive: shape says open, words say no -->
     <button type="button" aria-expanded="false" aria-controls="danger">Elimina raccolta</button>
     <div id="danger" hidden></div>
+
+    <!-- A submit button that is not inside its form. \`form="pay"\` makes it
+         the form's button from anywhere in the document, and it wraps an
+         image, which is a positive reason to click. Both of the usual
+         refusals - "submit button" (its type attribute is absent) and "inside
+         a form" (closest('form') is null) - miss it. An icon-only checkout
+         button in a sticky footer is exactly this shape. -->
+    <form id="pay" action="${'/trap/form-owner'}" method="get"></form>
+    <button form="pay" style="cursor:pointer"><img src="${EXPLORE.visiblePath(2)}" width="40" height="40" alt="paga"></button>
   </main>
   <script>
     const fill = (id, html) => { const el = document.getElementById(id); el.hidden = false; if (!el.dataset.filled) { el.innerHTML = html; el.dataset.filled = '1'; } };
@@ -442,10 +494,53 @@ const FRAME_HTML = `<!doctype html>
 <body><img src="${FRAME_IMAGE_PATH}" width="200" height="200" alt="inner"></body></html>`;
 
 /**
+ * The site's own page, carrying a third-party frame. The visible images and the
+ * one same-origin link are the site's; everything inside the frame belongs to
+ * the other origin.
+ * @param {string} adOrigin
+ */
+const exploreFramedHtml = (adOrigin) => `<!doctype html>
+<html lang="it">
+<head><meta charset="utf-8"><title>Explore framed</title></head>
+<body>
+  <main>
+    <div class="gallery">
+      ${range(EXPLORE.framed).map((n) => `<img src="${EXPLORE.framedImage(n)}" width="300" height="200" alt="framed ${n}">`).join('\n      ')}
+    </div>
+    <p><a href="${EXPLORE.framedPath}/2">Pagina 2</a></p>
+    ${adOrigin ? `<iframe src="${adOrigin}${EXPLORE.adPath}" width="728" height="120" title="annuncio"></iframe>` : ''}
+  </main>
+</body>
+</html>`;
+
+/**
+ * The third party's own page, as served by the ad origin. Its links are
+ * same-origin *to it*, which is exactly what makes them look followable to a
+ * crawler that takes a subframe's word for where the page is.
+ */
+const AD_HTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sponsored</title></head>
+<body>
+  <img src="${EXPLORE.adImagePath}" width="728" height="90" alt="banner">
+  <a href="${EXPLORE.adLandingPath}">See more photos</a>
+  <a href="${EXPLORE.adLandingPath}?utm=2">Next</a>
+</body>
+</html>`;
+
+const AD_LANDING_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sponsored landing</title></head>
+<body><p>the crawl left the site</p></body></html>`;
+
+/**
  * @param {number} [port] 0 picks a free one
+ * @param {{adOrigin?: string}} [options] where the third-party frame on
+ *   `/explore/framed` is served from. Without it the page has no frame, which
+ *   keeps every existing caller unchanged.
  * @returns {Promise<{origin: string, port: number, hits: Array<{method: string, path: string}>, close: () => Promise<void>}>}
  */
-export function startGalleryServer(port = 0) {
+export function startGalleryServer(port = 0, options = {}) {
+  const adOrigin = options.adOrigin || '';
   const hits = [];
   const server = createServer((req, res) => {
     const { pathname } = new URL(req.url, 'http://127.0.0.1');
@@ -465,6 +560,13 @@ export function startGalleryServer(port = 0) {
     if (pathname === '/explore/1') return html(EXPLORE_1_HTML);
     if (pathname === '/explore/2') return html(EXPLORE_2_HTML);
     if (pathname === '/explore/tabs') return html(EXPLORE_TABS_HTML);
+    // The site's framed page, and its one real second page.
+    if (pathname === EXPLORE.framedPath || pathname === `${EXPLORE.framedPath}/2`) {
+      return html(exploreFramedHtml(pathname === EXPLORE.framedPath ? adOrigin : ''));
+    }
+    // Served by whichever instance is playing the ad network.
+    if (pathname === EXPLORE.adPath) return html(AD_HTML);
+    if (pathname === EXPLORE.adLandingPath) return html(AD_LANDING_HTML);
     if (pathname === '/api/feed') return reply(200, 'application/json', Buffer.from(FEED_JSON));
     if (pathname === '/api/feed-xhr') return reply(200, 'application/json; charset=utf-8', Buffer.from(XHR_JSON));
     if (pathname === SPA.masterPath) return reply(200, 'application/vnd.apple.mpegurl', Buffer.from(masterPlaylist()));

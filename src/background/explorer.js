@@ -13,6 +13,14 @@ import {
   shouldClick, shouldFollow, linkPriority, crawlKey, EXPLORE_LIMITS,
 } from '../core/explore-policy.js';
 import { sendToTab } from '../shared/messages.js';
+
+/**
+ * A crawl belongs to the tab, so every message that drives one is aimed at the
+ * top frame. Without this the content script in each iframe - an ad, an
+ * embedded player, a comment widget - runs its own crawl of its own document
+ * and reports back as though it were the page.
+ */
+const TOP_FRAME = 0;
 import { log, warn } from '../shared/debug.js';
 
 const KEY = (tabId) => `crawl:${tabId}`;
@@ -75,7 +83,7 @@ export async function startCrawl(tabId, startUrl) {
   };
   await writeCrawl(tabId, crawl);
   log('crawl started on', key);
-  await sendToTab(tabId, { type: EXPLORE_MSG.PAGE, limits: EXPLORE_LIMITS });
+  await sendToTab(tabId, { type: EXPLORE_MSG.PAGE, limits: EXPLORE_LIMITS }, TOP_FRAME);
   return crawl;
 }
 
@@ -86,7 +94,7 @@ export async function stopCrawl(tabId, note) {
   crawl.stopped = true;
   if (note) crawl.note = note;
   await writeCrawl(tabId, crawl);
-  await sendToTab(tabId, { type: EXPLORE_MSG.STOP });
+  await sendToTab(tabId, { type: EXPLORE_MSG.STOP }, TOP_FRAME);
   log('crawl stopped on tab', tabId, note || '');
   return crawl;
 }
@@ -199,7 +207,7 @@ export async function resumeAfterNavigation(tabId, url) {
     crawl.currentUrl = key;
     await writeCrawl(tabId, crawl);
   }
-  await sendToTab(tabId, { type: EXPLORE_MSG.PAGE, limits: EXPLORE_LIMITS });
+  await sendToTab(tabId, { type: EXPLORE_MSG.PAGE, limits: EXPLORE_LIMITS }, TOP_FRAME);
   return true;
 }
 

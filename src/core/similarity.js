@@ -229,8 +229,11 @@ function nodesMatch(x, y) {
  * ancestor down to their own cell, which is exactly the signal we want.
  *
  * @returns {number} 0..1. NEUTRAL_STRUCTURE when either item has no structural
- *   path; a hard 0 only when both do and they belong to different repeated
- *   groups.
+ *   path at all; a hard 0 when they are known to sit in different repeated
+ *   groups, or when one sits in a repeated group and the other in none - which
+ *   is what keeps a hero banner out of the grid below it - unless their paths
+ *   agree the whole way, in which case they are the same template whatever the
+ *   scanner managed to resolve.
  */
 export function structuralSimilarity(a, b) {
   const pa = pathOf(a);
@@ -260,10 +263,16 @@ export function structuralSimilarity(a, b) {
   // same set. See DECISIONS.md.
   const ka = repeatKeyOf(a, pa);
   const kb = repeatKeyOf(b, pb);
+  // Being in *no* repeated structure is itself a finding - it is what keeps a
+  // hero banner out of the grid below it - so one key against none is still a
+  // hard 0. The one exception is two elements whose compared paths agree the
+  // whole way: they are demonstrably the same template, and a repeat key the
+  // scanner happened not to resolve (a last row holding one item, a wrapper
+  // one class apart, a cell inserted late) must not split a grid from itself.
   if (ka || kb) {
-    const sameGroup =
-      Boolean(ka) && Boolean(kb) &&
-      (ka === kb || ka === UNKNOWN_GROUP || kb === UNKNOWN_GROUP);
+    const sameGroup = ka && kb
+      ? (ka === kb || ka === UNKNOWN_GROUP || kb === UNKNOWN_GROUP)
+      : score === 1;
     if (!sameGroup) {
       // Different templates. Whatever ancestry they share is page chrome
       // (body > main > ...), not evidence that they belong together.

@@ -37,7 +37,12 @@ function stripControl(input) {
  * @param {number} [max]
  */
 export function sanitizeSegment(value, max = MAX_SEGMENT) {
-  let s = stripControl(value == null ? '' : value);
+  // Clamp before any pattern runs. `document.title` reaches here straight off
+  // the page with no length of its own, and `[.\s]+$` backtracks quadratically
+  // over a long run of dots and spaces that does not end the string: a 160k
+  // title cost 27 seconds, and buildPath runs once per item. Nothing past a few
+  // times the cap can survive the truncation below, so nothing is lost here.
+  let s = stripControl(value == null ? '' : String(value).slice(0, max * 4));
   s = s.replace(ILLEGAL_RE, '_');
   s = s.replace(/\s+/g, ' ').trim();
   s = s.replace(/\.{2,}/g, '.');      // no `..` can survive anywhere in a segment
@@ -50,12 +55,27 @@ export function sanitizeSegment(value, max = MAX_SEGMENT) {
     const dot = s.lastIndexOf('.');
     if (dot > 0 && s.length - dot <= 12) {
       const ext = s.slice(dot);
-      s = s.slice(0, Math.max(1, max - ext.length)) + ext;
+      s = clampUnits(s.slice(0, dot), Math.max(1, max - ext.length)) + ext;
     } else {
-      s = s.slice(0, max);
+      s = clampUnits(s, max);
     }
   }
   return s || 'file';
+}
+
+/**
+ * Cut to at most `units` UTF-16 units without splitting a surrogate pair. A
+ * lone surrogate is not valid UTF-8, and `chrome.downloads.download` either
+ * refuses such a filename or writes U+FFFD in its place.
+ * @param {string} s
+ * @param {number} units
+ */
+function clampUnits(s, units) {
+  if (s.length <= units) return s;
+  const cut = s.slice(0, units);
+  const last = cut.charCodeAt(cut.length - 1);
+  // A high surrogate at the end lost its partner to the cut.
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
 function decodeURIComponentSafe(s) {

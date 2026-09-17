@@ -152,3 +152,29 @@ test('upgradeCandidates puts site rules ahead of generic ones', () => {
   assert.ok(out.every((c) => typeof c.verify === 'boolean' && typeof c.note === 'string'));
   assert.equal(new Set(out.map((c) => c.url)).size, out.length, 'no duplicates');
 });
+
+/* ------------------------------------------------------------------ *
+ * A site rule is data, and data can be wrong
+ *
+ * genericUpgrades validates the URL it produces; siteUpgrades did not, and
+ * the result is fetched with `credentials: 'include'` from a context holding
+ * <all_urls>. None of the ten shipped rules can do this - the guard belongs
+ * in the layer that treats rules as input anyway.
+ * ------------------------------------------------------------------ */
+
+test('a rule cannot produce a non-http URL', () => {
+  const out = siteUpgrades('https://x.example.com/a.jpg', [
+    { match: 'example.com', find: '^https:', replace: 'file:' },
+    { match: 'example.com', find: '^https://x', replace: 'javascript:fetch' },
+    { match: 'example.com', find: '^https://', replace: 'data:text/html,' },
+  ]);
+  assert.deepEqual(out, [], `expected no candidates, got ${JSON.stringify(out)}`);
+});
+
+test('a rule may still rewrite the host, which is what redd.it needs', () => {
+  const out = siteUpgrades('https://preview.example.com/a.jpg', [
+    { match: 'example.com', find: '^https://preview\\.', replace: 'https://i.' },
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].url, 'https://i.example.com/a.jpg');
+});

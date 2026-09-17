@@ -73,8 +73,19 @@
     const trimmed = url.trim();
     if (!trimmed || trimmed === '#') return '';
     if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
+    // The scanner's own placeholders for media with no URL of its own - a
+    // painted <canvas>, an inline <svg>. They name an element, are never
+    // fetched, and `new URL()` would resolve them into nonsense.
+    if (trimmed.startsWith('magpie-canvas:') || trimmed.startsWith('magpie-svg:')) return trimmed;
     try {
-      return new URL(trimmed, document.baseURI).href;
+      const resolved = new URL(trimmed, document.baseURI);
+      // A scheme that is not a way of fetching bytes is not a media URL. This
+      // matters most on the bridge from the MAIN world, where the page itself
+      // chooses the string: `new URL()` is happy with `javascript:` and
+      // `chrome-extension:`, and whatever survives here reaches img.src, a
+      // credentialed fetch, or the download queue.
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return '';
+      return resolved.href;
     } catch {
       return '';
     }
@@ -110,20 +121,71 @@
    * Highest-resolution entry of a srcset. Width descriptors win over density,
    * because `1200w` is what the user actually wants when both are present.
    */
+  /** Density scores below any width descriptor, since 1w already scores 1. */
+  const DENSITY_SCALE = 1e-3;
+
+  /**
+   * Split a srcset the way the HTML parser does.
+   *
+   * Splitting on `,` is wrong, and wrong in a way that costs the real image: a
+   * URL may contain commas, and the URLs that do are exactly the ones this
+   * extension is pointed at - `/upload/c_fill,w_1600/photo.jpg` on Cloudinary,
+   * and every `data:image/...;base64,...`. The fragments that came back were
+   * relative paths that resolved against the page into 404s, and since the
+   * srcset result outranks `currentSrc`, they *replaced* the working URL.
+   *
+   * Per the spec a URL is a run of non-whitespace characters; if it ends in a
+   * comma the entry carries no descriptor, otherwise the descriptor runs to
+   * the next top-level comma.
+   */
+  function parseSrcset(srcset) {
+    const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
+    const out = [];
+    let i = 0;
+    while (i < srcset.length) {
+      while (i < srcset.length && (isWs(srcset[i]) || srcset[i] === ',')) i += 1;
+      const start = i;
+      while (i < srcset.length && !isWs(srcset[i])) i += 1;
+      if (i === start) break;
+      const raw = srcset.slice(start, i);
+      if (raw.endsWith(',')) {
+        const url = raw.replace(/,+$/, '');
+        if (url) out.push({ url, descriptor: '' });
+        continue;
+      }
+      while (i < srcset.length && isWs(srcset[i])) i += 1;
+      const dStart = i;
+      let depth = 0;
+      while (i < srcset.length) {
+        const c = srcset[i];
+        if (c === '(') depth += 1;
+        else if (c === ')') depth = Math.max(0, depth - 1);
+        else if (c === ',' && depth === 0) break;
+        i += 1;
+      }
+      out.push({ url: raw, descriptor: srcset.slice(dStart, i).trim() });
+      i += 1; // step over the separating comma
+    }
+    return out;
+  }
+
+  /**
+   * Highest-resolution entry of a srcset. Width descriptors win over density,
+   * because `1200w` is what the user actually wants when both are present -
+   * which is what this comment always claimed, while the arithmetic below
+   * multiplied density by 1000 and let `2x` beat `1600w`.
+   */
   function bestFromSrcset(srcset) {
     if (typeof srcset !== 'string' || !srcset.trim()) return '';
     let best = '';
     let bestScore = -1;
-    for (const part of srcset.split(',')) {
-      const bits = part.trim().split(/\s+/);
-      const url = bits[0];
-      if (!url) continue;
-      const descriptor = bits[1] || '1x';
-      let score = 1;
+    for (const { url, descriptor } of parseSrcset(srcset)) {
       const w = /^(\d+(?:\.\d+)?)w$/i.exec(descriptor);
       const x = /^(\d+(?:\.\d+)?)x$/i.exec(descriptor);
+      // No usable descriptor reads as 1x, as the HTML parser has it.
+      let score = DENSITY_SCALE;
       if (w) score = Number(w[1]);
-      else if (x) score = Number(x[1]) * 1000; // keep density below any real width
+      else if (x) score = Number(x[1]) * DENSITY_SCALE;
       if (score > bestScore) {
         bestScore = score;
         best = url;

@@ -86,8 +86,16 @@ export async function launchWithExtension(binary, port, { downloadDir } = {}) {
  * both to make lazy images load.
  */
 export async function openPage(client, url) {
-  const { targetId } = await client.send('Target.createTarget', { url, newWindow: true });
+  // Open empty, then navigate. Chrome 153 ignores the `url` handed to
+  // createTarget and leaves the new window at about:blank - every page a check
+  // opened was empty, the fixture server logged no request at all, and the
+  // failure read as "the extension indexed nothing". Asking for the window and
+  // the navigation separately loads the page exactly once on every build,
+  // which matters: one of the explore assertions counts how many times a page
+  // was fetched.
+  const { targetId } = await client.send('Target.createTarget', { url: 'about:blank', newWindow: true });
   const session = await attach(client, targetId);
+  await client.send('Page.navigate', { url }, session);
   return { targetId, session };
 }
 

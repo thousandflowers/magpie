@@ -156,3 +156,32 @@ test('the protected and clean manifests differ only in ContentProtection', () =>
     .replace(/\s+/g, ' ').trim();
   assert.equal(strip(PROTECTED_MPD), strip(CLEAN_MPD));
 });
+
+/* ------------------------------------------------------------------ *
+ * Namespace-qualified ContentProtection
+ *
+ * `<cenc:ContentProtection>` is legal DASH and commercial packagers emit it.
+ * getElementsByTagName matches the qualified name, so a prefixed element is
+ * simply not found, the stream parses as clean, and the panel offers all
+ * three actions on a Widevine manifest. The boundary has to hold on the
+ * spelling the packager chose, not the one the parser prefers.
+ * ------------------------------------------------------------------ */
+
+/** The same manifest with every ContentProtection element prefixed. */
+const prefixed = (xml) => xml.replace(/<(\/?)ContentProtection/g, '<$1cenc:ContentProtection');
+
+test('a namespace-prefixed ContentProtection is still DRM', () => {
+  const info = parse(prefixed(PROTECTED_MPD));
+  assert.equal(info.encrypted, true);
+  assert.ok(info.drmSystems.length > 0, `expected a key system, got ${JSON.stringify(info.drmSystems)}`);
+});
+
+test('the panel refuses a prefixed protected manifest too', () => {
+  assert.equal(actionsEnabled(parse(prefixed(PROTECTED_MPD))), false);
+});
+
+test('prefixing changes nothing about a clean manifest', () => {
+  assert.equal(parse(prefixed(CLEAN_MPD)).encrypted, false);
+  // Prefixing must not cost us the variants, either.
+  assert.equal(parse(prefixed(CLEAN_MPD)).variants.length, parse(CLEAN_MPD).variants.length);
+});

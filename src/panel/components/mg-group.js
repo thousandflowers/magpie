@@ -73,6 +73,9 @@ export class MgGroup extends HTMLElement {
     head.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
+        // The document treats Enter as "download the selection". Without this
+        // the event bubbled on, and collapsing a group started a download.
+        event.stopPropagation();
         toggle();
       }
     });

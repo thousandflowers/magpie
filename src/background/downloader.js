@@ -16,6 +16,15 @@ const MAX_TRIES = 3;
 const BASE_BACKOFF_MS = 800;
 const MAX_BACKOFF_MS = 30_000;
 
+/** How long the advisory HEAD probe may take before it is abandoned. */
+const HEAD_TIMEOUT_MS = 6000;
+
+/**
+ * Statuses that mean the file is not there, as opposed to "not like that".
+ * A 405 or a 403 to a HEAD says nothing about whether a GET would work.
+ */
+const GONE = new Set([404, 410]);
+
 const RETRYABLE = new Set([
   'SERVER_FAILED', 'SERVER_NO_RANGE', 'SERVER_BAD_CONTENT', 'NETWORK_FAILED',
   'NETWORK_TIMEOUT', 'NETWORK_DISCONNECTED', 'FILE_TRANSIENT_ERROR',
@@ -35,6 +44,9 @@ export function onProgress(fn) {
 }
 
 function emit(session) {
+  // Every state change passes through here, which makes it the one place the
+  // queue has to be written down so a terminated worker can pick it up again.
+  persist();
   if (!progressListener) return;
   progressListener({
     sessionId: session.id,
@@ -178,6 +190,153 @@ export function stopAll() {
   for (const id of sessions.keys()) stopSession(id);
 }
 
+/* ------------------------------------------------------------------ *
+ * Surviving the worker
+ *
+ * An MV3 service worker is terminated after thirty seconds without an event,
+ * and `chrome.downloads.onChanged` does not fire while bytes arrive - so one
+ * large file is enough to end it. The queue lived only in the Map above, so
+ * on the next wake the completion arrived for a session nobody remembered,
+ * `pump()` was never called again, and the rest of the batch never started.
+ * The panel sat at "4/50" for good, with no error anywhere.
+ *
+ * Only what is needed to finish the work and to write the sidecar is stored.
+ * The items themselves are not: they can carry a structural path apiece, and
+ * session storage is a 10 MB budget the index is already fighting for.
+ * ------------------------------------------------------------------ */
+
+const PERSIST_KEY = 'downloads';
+const PERSIST_DEBOUNCE_MS = 250;
+let persistTimer = null;
+
+/** @param {object} job */
+const packJob = (job) => ({
+  jobId: job.jobId,
+  url: job.url,
+  index: job.index,
+  host: job.host,
+  path: job.path,
+  tries: job.tries,
+  state: job.state,
+  expiresAt: job.expiresAt,
+  downloadId: job.downloadId,
+  error: job.error,
+  // Exactly the fields buildSidecar reads back, and nothing else.
+  item: {
+    url: job.item.url,
+    mimeType: job.item.mimeType || '',
+    width: job.item.width || 0,
+    height: job.item.height || 0,
+    bytes: job.item.bytes == null ? null : job.item.bytes,
+    status: job.item.status,
+    sources: job.item.sources || [],
+    frameOrigin: job.item.frameOrigin || '',
+  },
+});
+
+const packSession = (session) => ({
+  id: session.id,
+  tabId: session.tabId,
+  concurrency: session.concurrency,
+  counts: session.counts,
+  errors: session.errors,
+  stopped: session.stopped,
+  finished: session.finished,
+  startedAt: session.startedAt,
+  context: session.context,
+  template: session.template,
+  writeSidecar: session.writeSidecar,
+  expiringSoon: session.expiringSoon,
+  jobs: session.jobs.map(packJob),
+});
+
+/** activeHosts is derived, never stored: it is whatever is running. */
+const unpackSession = (packed) => ({
+  ...packed,
+  activeHosts: new Set(packed.jobs.filter((j) => j.state === 'running').map((j) => j.host)),
+});
+
+/**
+ * `globalThis.chrome`, or null. A bare `chrome` reference throws where the API
+ * is absent - which is every unit test that does not install a stub, and any
+ * future context that imports this module for its pure parts.
+ */
+const sessionStore = () => (globalThis.chrome && globalThis.chrome.storage
+  ? globalThis.chrome.storage.session || null
+  : null);
+
+function persist() {
+  const storage = sessionStore();
+  if (persistTimer || !storage) return;
+  persistTimer = setTimeout(async () => {
+    persistTimer = null;
+    const live = {};
+    for (const [id, session] of sessions) {
+      if (!session.finished) live[id] = packSession(session);
+    }
+    try {
+      if (Object.keys(live).length) await storage.set({ [PERSIST_KEY]: live });
+      else await storage.remove(PERSIST_KEY);
+    } catch (err) {
+      warn('could not remember the download queue', err);
+    }
+  }, PERSIST_DEBOUNCE_MS);
+}
+
+/**
+ * Rebuild any unfinished session and carry on. Call once when the worker
+ * starts, after installDownloadListeners.
+ */
+export async function resumeSessions() {
+  const storage = sessionStore();
+  if (!storage) return 0;
+  let stored;
+  try {
+    stored = (await storage.get(PERSIST_KEY))[PERSIST_KEY];
+  } catch (err) {
+    warn('could not read the download queue back', err);
+    return 0;
+  }
+  if (!stored || typeof stored !== 'object') return 0;
+
+  let resumed = 0;
+  for (const packed of Object.values(stored)) {
+    if (!packed || sessions.has(packed.id)) continue;
+    const session = unpackSession(packed);
+    sessions.set(session.id, session);
+    resumed += 1;
+
+    // What became of the jobs that were in flight while we were away? Chrome
+    // kept downloading them, so ask it rather than assume.
+    for (const job of session.jobs) {
+      if (job.state !== 'running' || job.downloadId == null) continue;
+      inflight.set(job.downloadId, { sessionId: session.id, jobId: job.jobId });
+      let found = null;
+      try {
+        [found] = await chrome.downloads.search({ id: job.downloadId });
+      } catch {
+        found = null;
+      }
+      if (!found) {
+        // Chrome has no record of it: it never survived the restart either.
+        inflight.delete(job.downloadId);
+        completeJob(session, job, false, 'NETWORK_FAILED');
+      } else if (found.state === 'complete') {
+        inflight.delete(job.downloadId);
+        completeJob(session, job, true, '');
+      } else if (found.state === 'interrupted') {
+        inflight.delete(job.downloadId);
+        completeJob(session, job, false, found.error || 'INTERRUPTED');
+      }
+      // in_progress: leave it running, the listener will hear about it.
+    }
+    log('resumed download session', session.id, session.counts);
+    pump(session);
+    emit(session);
+  }
+  return resumed;
+}
+
 function nextJob(session) {
   for (const job of session.jobs) {
     if (job.state !== 'queued') continue;
@@ -188,7 +347,17 @@ function nextJob(session) {
 }
 
 function pump(session) {
-  if (session.stopped || session.finished) return;
+  if (session.finished) return;
+  // A stopped session starts nothing more, but it still has to be able to
+  // finish. Returning here before finishIfDone left every stopped session
+  // pending forever: the panel's error list and its sidecar are both gated on
+  // the terminal emit, so pressing Stop froze the counter and said nothing,
+  // and reapSessions - which only collects finished sessions - leaked it for
+  // the life of the worker.
+  if (session.stopped) {
+    finishIfDone(session);
+    return;
+  }
   while (session.counts.running < session.concurrency) {
     const job = nextJob(session);
     if (!job) break;
@@ -236,6 +405,18 @@ function completeJob(session, job, ok, reason) {
     return;
   }
 
+  // A download the user cancelled is not a download that failed. Stop cancels
+  // every running job, Chrome answers each with USER_CANCELED, and every one
+  // of them used to land in counts.failed and in the error list - so pressing
+  // Stop on a four-wide session reported four failures the user had caused on
+  // purpose.
+  if (reason === 'USER_CANCELED' || session.stopped) {
+    job.state = 'cancelled';
+    emit(session);
+    pump(session);
+    return;
+  }
+
   job.error = reason || 'unknown error';
   const retryable = RETRYABLE.has(reason) && job.tries < MAX_TRIES && !session.stopped;
   if (!retryable) {
@@ -257,8 +438,14 @@ async function scheduleRetry(session, job) {
   let delay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (job.tries - 1));
   // chrome.downloads reports transport failures, not HTTP status codes, so a
   // cheap HEAD tells us whether this is rate limiting and how long to wait.
+  // A server that accepts the connection and never answers would otherwise
+  // pin this job in `backoff` for good, and finishIfDone counts backoff as
+  // pending - so the session hangs at N-1 of N and is never reaped. Same six
+  // seconds upgrade-verify.js already uses.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), HEAD_TIMEOUT_MS);
   try {
-    const res = await fetch(job.url, { method: 'HEAD', credentials: 'include' });
+    const res = await fetch(job.url, { method: 'HEAD', credentials: 'include', signal: abort.signal });
     if (res.status === 429 || res.status === 503) {
       const retryAfter = Number(res.headers.get('retry-after'));
       if (Number.isFinite(retryAfter) && retryAfter > 0) {
@@ -266,7 +453,11 @@ async function scheduleRetry(session, job) {
       } else {
         delay = Math.min(MAX_BACKOFF_MS, delay * 2);
       }
-    } else if (res.status >= 400 && res.status !== 429) {
+    } else if (GONE.has(res.status)) {
+      // Only a status that says the file is not there justifies giving up on
+      // a transport error. Plenty of CDNs answer 405 to HEAD, and some signed
+      // URLs answer 403 to anything but GET, so treating every 4xx as fatal
+      // failed downloads whose GET would have succeeded.
       job.state = 'failed';
       session.counts.failed += 1;
       session.errors.push({ url: job.url, error: `HTTP ${res.status}` });
@@ -276,6 +467,8 @@ async function scheduleRetry(session, job) {
     }
   } catch {
     /* HEAD is advisory; fall back to plain exponential backoff */
+  } finally {
+    clearTimeout(timer);
   }
 
   await sleep(delay);

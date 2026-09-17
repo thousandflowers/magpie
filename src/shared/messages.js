@@ -68,7 +68,6 @@ const MAX_STR = 4096;
  * is dropped instead - truncating it silently is the one wrong answer.
  */
 export const MAX_DATA_URL = 1024 * 1024;
-const MAX_ITEMS = 2000;
 // Measured on a 414-item category page: the path was 35% of an item's weight
 // and the class counts 21%, at 2.2 KB per item. The engine reads at most the
 // cell, its grid and their ancestors; sixteen levels and eight classes a node
@@ -79,6 +78,27 @@ const MAX_COUNT_KEYS = 32;
 
 function str(v, max = MAX_STR) {
   return typeof v === 'string' ? v.slice(0, max) : '';
+}
+
+/**
+ * Schemes a media URL may use. Every URL that survives here can reach
+ * `img.src`, a `fetch` with credentials, or `chrome.downloads.download`, and
+ * candidates arrive from a page: the MAIN-world bridge's token is a namespace
+ * shipped in the CRX, not a secret, so any script on the page can post one. A
+ * scheme that is not a way of fetching bytes has no business in the index.
+ */
+const FETCHABLE = /^(?:https?|data|blob):/i;
+
+/**
+ * The scanner's own placeholders for media that has no URL of its own - a
+ * painted `<canvas>`, an inline `<svg>`. They name an element, are never
+ * fetched, and the panel asks the content script for the bytes instead.
+ */
+const SYNTHETIC = /^magpie-(?:canvas|svg):/i;
+
+/** @param {string} url @returns {string} the URL, or '' when it is not fetchable. */
+function fetchableUrl(url) {
+  return FETCHABLE.test(url) || SYNTHETIC.test(url) ? url : '';
 }
 
 function num(v) {
@@ -99,7 +119,7 @@ export function sanitizeCandidate(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const isData = typeof raw.url === 'string' && raw.url.startsWith('data:');
   if (isData && raw.url.length > MAX_DATA_URL) return null;
-  const url = isData ? raw.url : str(raw.url);
+  const url = fetchableUrl(isData ? raw.url : str(raw.url));
   if (!url) return null;
 
   const path = Array.isArray(raw.structuralPath)
@@ -140,7 +160,7 @@ export function sanitizeCandidate(raw) {
     harBody: bool(raw.harBody),
     repeatDepth: Number.isInteger(raw.repeatDepth) && raw.repeatDepth >= 0 ? raw.repeatDepth : -1,
     classCounts,
-    upgradeUrl: str(raw.upgradeUrl),
+    upgradeUrl: fetchableUrl(str(raw.upgradeUrl)),
     upgradeNote: str(raw.upgradeNote, 128),
     frameUrl: str(raw.frameUrl),
     frameOrigin: str(raw.frameOrigin, 256),
@@ -149,30 +169,21 @@ export function sanitizeCandidate(raw) {
     poster: bool(raw.poster),
     protectedReason: str(raw.protectedReason, 128),
     synthetic: str(raw.synthetic, 16),
-    previewUrl: str(raw.previewUrl),
+    previewUrl: fetchableUrl(str(raw.previewUrl)),
     origin: str(raw.origin, 64),
     timestamp: num(raw.timestamp),
   };
 }
 
-/**
- * Validate a whole bridge message from the MAIN world.
- * @param {unknown} data
- * @returns {{type: string, items: object[]}|null}
+/*
+ * There used to be a `sanitizeBridgeMessage` here: the whole-message validator
+ * for the MAIN-world bridge, exported and imported by nobody. A content script
+ * is a classic script and cannot import a module, so isolated.js rebuilds each
+ * candidate inline instead - which meant the repository looked like it
+ * validated bridge messages in one place and did not. Removed rather than
+ * left as a decoy; the real check is `sanitizeCandidate` above, which the
+ * background applies to everything the bridge forwards.
  */
-export function sanitizeBridgeMessage(data) {
-  if (!data || typeof data !== 'object') return null;
-  if (data.token !== BRIDGE_TOKEN) return null;
-  const type = str(data.type, 64);
-  if (!type) return null;
-  const rawItems = Array.isArray(data.items) ? data.items.slice(0, MAX_ITEMS) : [];
-  const items = [];
-  for (const raw of rawItems) {
-    const c = sanitizeCandidate(raw);
-    if (c) items.push(c);
-  }
-  return { type, items, detail: str(data.detail, 256) };
-}
 
 /** Promise wrapper that never rejects when the receiver is gone. */
 export function sendMessage(message) {
