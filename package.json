@@ -1,6 +1,6 @@
 {
   "name": "magpie",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "Chrome extension (MV3) that finds every image, video and audio file a page loads or references, explores the app to load the rest, groups them by similarity, and downloads them in bulk. No build step, no runtime dependencies.",
   "keywords": [
