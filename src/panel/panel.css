@@ -193,6 +193,10 @@ input[type="text"], input[type="search"], input[type="number"], select {
 .threshold-field { gap: 6px; }
 .threshold-field input[type="range"] {
   width: 92px;
+  /* 24px is the smallest a pointer target may be on the web (WCAG 2.5.8).
+     A range input renders shorter than that by default - measured at 22px -
+     and the thumb is the part you have to hit. */
+  min-height: 24px;
   accent-color: var(--accent);
   margin: 0;
 }
@@ -200,7 +204,9 @@ input[type="text"], input[type="search"], input[type="number"], select {
   min-width: 74px;
   font-variant-numeric: tabular-nums;
   font-size: 11px;
-  color: var(--ink-3);
+  /* --ink-3 measured 4.0:1 here, under the 4.5:1 floor for normal text. This
+     is a number people read off while dragging, not a decorative caption. */
+  color: var(--ink-2);
   white-space: nowrap;
 }
 /* While a seed is active the number is what decides the selection, so it stops

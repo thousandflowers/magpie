@@ -360,6 +360,39 @@ try {
   check(Math.abs(Number(stored) - 0.8) < 1e-6,
     `the slider's settled value persists as a number (${stored})`);
 
+  // The readout is a number people read off *while dragging*, so it is body
+  // text, not decoration: it has to clear 4.5:1 in whichever theme the browser
+  // is in. And a range input renders shorter than the 24px floor for a pointer
+  // target unless it is told not to. Both were measured wrong once.
+  const controlAudit = await q.inPanel(`(() => {
+    const lum = (c) => {
+      const [r, g, b] = c.match(/[\\d.]+/g).slice(0, 3).map(Number).map((v) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const bgOf = (el) => {
+      let n = el;
+      while (n) {
+        const c = getComputedStyle(n).backgroundColor;
+        if (c && !/rgba\\(0, 0, 0, 0\\)|transparent/.test(c)) return c;
+        n = n.parentElement;
+      }
+      return 'rgb(255, 255, 255)';
+    };
+    const read = document.getElementById('threshold-read');
+    const [hi, lo] = [lum(getComputedStyle(read).color), lum(bgOf(read))].sort((a, b) => b - a);
+    return {
+      contrast: (hi + 0.05) / (lo + 0.05),
+      sliderHeight: document.getElementById('threshold').getBoundingClientRect().height,
+    };
+  })()`);
+  check(controlAudit.contrast >= 4.5,
+    `the slider's readout clears 4.5:1 (${controlAudit.contrast.toFixed(2)}:1)`);
+  check(controlAudit.sliderHeight >= 24,
+    `the slider is at least 24px tall to aim at (${Math.round(controlAudit.sliderHeight)}px)`);
+
   /* ---- growing from a set you picked yourself ---- */
 
   // One example cannot always say what you mean. Pick two unlike things by
