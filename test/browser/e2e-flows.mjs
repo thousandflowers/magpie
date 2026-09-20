@@ -317,9 +317,39 @@ try {
   check(similar.length >= EXPLORE.page2 && range(EXPLORE.page2).every((n) => similar.some((u) => u.endsWith(EXPLORE.page2Path(n)))),
     `"select similar" from one page-2 image takes its grid (${similar.length} selected)`);
 
-  await q.inPanel(`(() => { const s = document.getElementById('threshold'); s.value = 'strict'; s.dispatchEvent(new Event('change')); return true; })()`);
+  // The slider is the control people reach for twice in a row: pick one photo,
+  // then widen until the set looks right. Loosening has to take *more*, and the
+  // panel has to say so while the slider is still moving - a filter you cannot
+  // feel is a filter you cannot aim.
+  const drag = (value) => q.inPanel(`(() => {
+    const s = document.getElementById('threshold');
+    s.value = '${value}';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  const selectedNow = () => q.inPanel(`document.querySelectorAll('mg-item[selected]').length`);
+
+  // The seed from the assertion above is still active - that is the state the
+  // slider is meant to be adjusted in.
+  await drag(0.9);
   await sleep(500);
-  check((await q.getState()).options.threshold === 'strict', 'the similarity threshold persists as an option');
+  const atStrict = await selectedNow();
+  await drag(0.35);
+  await sleep(500);
+  const atLoose = await selectedNow();
+  check(atLoose > atStrict,
+    `loosening the slider takes more, not fewer (strict ${atStrict} -> loose ${atLoose})`);
+
+  const readout = await q.inPanel(`document.getElementById('threshold-read').textContent`);
+  check(/0\.35/.test(readout) && /loose/.test(readout) && /selected/.test(readout),
+    `the readout says the number, the band and the count ("${readout}")`);
+
+  await drag(0.8);
+  await sleep(400);
+  const stored = (await q.getState()).options.threshold;
+  check(Math.abs(Number(stored) - 0.8) < 1e-6,
+    `the slider's settled value persists as a number (${stored})`);
   const template = 'magpie/{host}/{index}-{basename}.{ext}';
   await q.inPanel(`(() => { const t = document.getElementById('template'); t.value = ${JSON.stringify(template)}; t.dispatchEvent(new Event('change')); return true; })()`);
   await sleep(500);

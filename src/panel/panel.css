@@ -188,6 +188,25 @@ input[type="text"], input[type="search"], input[type="number"], select {
 }
 .filter-field input[type="number"] { width: 62px; }
 
+/* The similarity slider. It is the one control people reach for twice in a
+   row, so it carries its own value: dragging without a readout is guessing. */
+.threshold-field { gap: 6px; }
+.threshold-field input[type="range"] {
+  width: 92px;
+  accent-color: var(--accent);
+  margin: 0;
+}
+#threshold-read {
+  min-width: 74px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+/* While a seed is active the number is what decides the selection, so it stops
+   being a caption and starts being the answer. */
+#threshold-read[data-live="1"] { color: var(--accent); }
+
 /* ---------------------------------------------------------------- *
  * Banners
  * ---------------------------------------------------------------- */

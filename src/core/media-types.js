@@ -46,6 +46,45 @@ export const FILTER_CONFIG = {
 
 export const SIMILARITY_PRESETS = { loose: 0.45, balanced: 0.62, strict: 0.8 };
 
+/**
+ * The band the panel's slider moves through. Below the floor everything on a
+ * page is "similar" to everything else and the answer stops meaning anything;
+ * above the ceiling only an item and itself survive.
+ */
+export const SIMILARITY_RANGE = { min: 0.3, max: 0.95, step: 0.01 };
+
+/**
+ * A stored threshold as a number. Accepts the preset *names* too, because that
+ * is what the option held before the slider existed and a saved setting should
+ * not be thrown away by an update.
+ * @param {number|string} value
+ */
+export function resolveThreshold(value) {
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) {
+    return Math.min(SIMILARITY_RANGE.max, Math.max(SIMILARITY_RANGE.min, n));
+  }
+  return SIMILARITY_PRESETS[value] ?? SIMILARITY_PRESETS.balanced;
+}
+
+/**
+ * The preset this number reads as, for a label beside the slider. Nearest
+ * wins - the names are landmarks on a continuum, not three separate modes.
+ * @param {number} value
+ */
+export function thresholdName(value) {
+  let best = '';
+  let bestGap = Infinity;
+  for (const [name, at] of Object.entries(SIMILARITY_PRESETS)) {
+    const gap = Math.abs(at - value);
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = name;
+    }
+  }
+  return best;
+}
+
 const EXT_RE = new RegExp(
   '\\.(' +
     [...IMAGE_EXT, ...VIDEO_EXT, ...AUDIO_EXT, ...STREAM_EXT].join('|') +

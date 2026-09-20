@@ -12,7 +12,9 @@ import './components/mg-group.js';
 import {
   cluster, clusterChunked, selectSimilar, describeGroup,
 } from '../core/similarity.js';
-import { SIMILARITY_PRESETS, FILTER_CONFIG } from '../core/media-types.js';
+import {
+  SIMILARITY_RANGE, FILTER_CONFIG, resolveThreshold, thresholdName,
+} from '../core/media-types.js';
 import {
   formatBytes, applyTemplate, tokensFor, DEFAULT_TEMPLATE, sanitizeSegment,
 } from '../core/filename.js';
@@ -48,6 +50,7 @@ const el = {
   totals: $('totals'),
   search: $('search'),
   threshold: $('threshold'),
+  thresholdRead: $('threshold-read'),
   rescan: $('rescan'),
   minDim: $('min-dim'),
   minKb: $('min-kb'),
@@ -166,7 +169,12 @@ async function refresh({ consumeSeed = false } = {}) {
   if (state.notice && state.items.length) state.notice = '';
 
   if (!el.template.value) el.template.value = state.options.filenameTemplate || DEFAULT_TEMPLATE;
-  if (state.options.threshold) el.threshold.value = state.options.threshold;
+  // The option used to hold a preset name and now holds a number; resolve
+  // either, so an existing setting survives the update.
+  if (state.options.threshold != null) {
+    el.threshold.value = String(resolveThreshold(state.options.threshold));
+  }
+  updateThresholdRead();
 
   // Drop selections whose items are gone (navigation, filter change).
   const live = new Set(state.items.map((i) => i.id));
@@ -185,7 +193,21 @@ async function refresh({ consumeSeed = false } = {}) {
  * ------------------------------------------------------------------ */
 
 function currentThreshold() {
-  return SIMILARITY_PRESETS[el.threshold.value] || SIMILARITY_PRESETS.balanced;
+  return resolveThreshold(el.threshold.value);
+}
+
+/**
+ * The number beside the slider, and the preset it reads as. While a seed is
+ * active it also says how many items the current setting takes - that count is
+ * the whole reason to touch the slider, and watching it move is what tells you
+ * where to stop.
+ */
+function updateThresholdRead() {
+  const value = currentThreshold();
+  const parts = [value.toFixed(2), thresholdName(value)];
+  if (state.seedId) parts.push(`· ${state.selected.size} selected`);
+  el.thresholdRead.textContent = parts.join(' ');
+  el.thresholdRead.dataset.live = state.seedId ? '1' : '0';
 }
 
 function filtered() {
@@ -403,6 +425,7 @@ function clearSelection() {
   state.seedScores.clear();
   for (const tile of el.body.querySelectorAll('mg-item')) tile.score = null;
   updateSelectionUi();
+  updateThresholdRead();
 }
 
 /** Re-run scoring with this item as the seed and select everything similar. */
@@ -418,6 +441,7 @@ function applySeed(seed) {
     tile.score = state.seedScores.has(id) ? state.seedScores.get(id) : null;
   }
   updateSelectionUi();
+  updateThresholdRead();
 }
 
 /* ------------------------------------------------------------------ *
@@ -916,17 +940,34 @@ el.search.addEventListener('input', () => {
   searchTimer = setTimeout(render, 150);
 });
 
-el.threshold.addEventListener('change', async () => {
-  await send({ type: MSG.SET_OPTIONS, options: { threshold: el.threshold.value } });
+/**
+ * Dragging the slider answers immediately, because a filter you cannot feel is
+ * a filter you cannot aim. Re-running the selection is linear in the number of
+ * items, so it happens on every frame of the drag; re-grouping is quadratic,
+ * so it waits for a pause.
+ */
+let regroupTimer = null;
+
+el.threshold.addEventListener('input', () => {
   if (state.seedId) {
     const seed = findItem(state.seedId);
-    if (seed) {
-      await render();
-      applySeed(seed);
-      return;
-    }
+    if (seed) applySeed(seed); // also refreshes the readout
+    else updateThresholdRead();
+  } else {
+    updateThresholdRead();
   }
-  render();
+  if (regroupTimer) clearTimeout(regroupTimer);
+  regroupTimer = setTimeout(async () => {
+    regroupTimer = null;
+    await render();
+    const seed = state.seedId ? findItem(state.seedId) : null;
+    if (seed) applySeed(seed); // render() rebuilt the tiles; re-mark them
+  }, 200);
+});
+
+// Only the settled value is worth storing: `input` fires on every pixel.
+el.threshold.addEventListener('change', async () => {
+  await send({ type: MSG.SET_OPTIONS, options: { threshold: currentThreshold() } });
 });
 
 for (const input of [el.minDim, el.minKb]) input.addEventListener('change', render);
@@ -1086,6 +1127,13 @@ chrome.tabs.onActivated.addListener(async () => {
  * ------------------------------------------------------------------ */
 
 (async function boot() {
+  // The markup carries a sane default so the control is usable before any
+  // script runs, but the band itself is defined once, in core.
+  el.threshold.min = String(SIMILARITY_RANGE.min);
+  el.threshold.max = String(SIMILARITY_RANGE.max);
+  el.threshold.step = String(SIMILARITY_RANGE.step);
+  updateThresholdRead();
+
   state.tabId = await resolveTabId();
   el.template.value = DEFAULT_TEMPLATE;
   await refresh({ consumeSeed: true });

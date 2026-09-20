@@ -15,14 +15,18 @@
     </div>
     <div class="header-controls">
       <input type="search" id="search" placeholder="filter by URL…" aria-label="Filter items by URL substring">
-      <label class="filter-field" for="threshold">
+      <label class="filter-field threshold-field" for="threshold">
         <span>similarity</span>
-        <select id="threshold" aria-label="Similarity threshold">
-          <option value="loose">loose</option>
-          <option value="balanced" selected>balanced</option>
-          <option value="strict">strict</option>
-        </select>
+        <input type="range" id="threshold" list="threshold-marks"
+               min="0.3" max="0.95" step="0.01" value="0.62"
+               aria-label="How alike two items must be to count as the same set">
+        <output id="threshold-read" for="threshold">0.62 balanced</output>
       </label>
+      <datalist id="threshold-marks">
+        <option value="0.45" label="loose"></option>
+        <option value="0.62" label="balanced"></option>
+        <option value="0.8" label="strict"></option>
+      </datalist>
       <button type="button" id="rescan" title="Rescan the page now">rescan</button>
     </div>
   </header>

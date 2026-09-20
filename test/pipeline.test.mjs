@@ -11,6 +11,7 @@ import {
 import { parseHar, decodeHarBody, MAX_BODY_BYTES } from '../src/core/har-import.js';
 import {
   classify, looksLikeMediaUrl, rejectionReason, extOf, dataUriBytes,
+  SIMILARITY_RANGE, SIMILARITY_PRESETS, resolveThreshold, thresholdName,
 } from '../src/core/media-types.js';
 
 /* ------------------------- filenames ------------------------- */
@@ -537,3 +538,38 @@ function makeFakeXmlDoc() {
     },
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * The similarity slider's arithmetic
+ * ------------------------------------------------------------------ */
+
+test('a stored preset name still resolves, so an old setting survives', () => {
+  // The option held 'loose' | 'balanced' | 'strict' before the slider existed.
+  for (const [name, value] of Object.entries(SIMILARITY_PRESETS)) {
+    assert.equal(resolveThreshold(name), value);
+  }
+  assert.equal(resolveThreshold(undefined), SIMILARITY_PRESETS.balanced);
+  assert.equal(resolveThreshold('nonsense'), SIMILARITY_PRESETS.balanced);
+});
+
+test('a number is kept, and clamped to the band the slider moves through', () => {
+  assert.equal(resolveThreshold(0.71), 0.71);
+  assert.equal(resolveThreshold('0.71'), 0.71);
+  assert.equal(resolveThreshold(5), SIMILARITY_RANGE.max);
+  assert.equal(resolveThreshold(0.01), SIMILARITY_RANGE.min);
+});
+
+test('every preset sits inside the band, or the slider could not reach it', () => {
+  for (const value of Object.values(SIMILARITY_PRESETS)) {
+    assert.ok(value >= SIMILARITY_RANGE.min && value <= SIMILARITY_RANGE.max,
+      `${value} is outside ${SIMILARITY_RANGE.min}..${SIMILARITY_RANGE.max}`);
+  }
+});
+
+test('the label names the nearest preset, not an exact match', () => {
+  assert.equal(thresholdName(SIMILARITY_PRESETS.loose), 'loose');
+  assert.equal(thresholdName(SIMILARITY_PRESETS.strict), 'strict');
+  assert.equal(thresholdName(0.63), 'balanced');
+  assert.equal(thresholdName(0.95), 'strict');
+  assert.equal(thresholdName(0.3), 'loose');
+});
