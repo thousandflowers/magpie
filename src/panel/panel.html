@@ -59,15 +59,22 @@
 
   <main class="body" id="body">
     <div class="empty" id="empty">
-      Nothing found yet. Scroll the page, or press <kbd>rescan</kbd>.
+      Nothing found yet. Press <kbd>explore</kbd> and Magpie walks the site
+      itself - scrolling, opening what hides media, following its links - or
+      <kbd>rescan</kbd> to re-read this page as it stands.
     </div>
   </main>
 
   <section class="detail" id="detail" hidden aria-label="Item detail"></section>
 
   <footer class="footer">
+    <!-- Deliberately phrased as a conditional, not an invitation: nobody should
+         be recording a HAR to get more media out of a page. That is what
+         `explore` is for. This is here for a capture you already have - from a
+         session before the extension was installed, or one that holds the
+         bytes so the files can be saved with the network off. -->
     <div class="dropzone" id="dropzone">
-      drop a .har file here to merge a DevTools capture
+      already have a DevTools .har? drop it here
       <input type="file" id="har-input" accept=".har,application/json" hidden>
     </div>
     <div class="progress" id="progress" hidden>
