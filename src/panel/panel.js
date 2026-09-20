@@ -28,6 +28,8 @@ import { MSG } from '../shared/messages.js';
 /** Above this many items, clustering is skipped for the remainder and said so. */
 const CLUSTER_LIMIT = 1200;
 const REFRESH_DEBOUNCE_MS = 220;
+/** Matches the moment the page holds the flash for, so the two line up. */
+const FLASH_MS = 900;
 
 /**
  * The one place a stream variant's columns are defined. The header row and the
@@ -72,6 +74,10 @@ const el = {
   template: $('template'),
   selection: $('selection'),
   grow: $('grow'),
+  propose: $('propose'),
+  proposeCount: $('proposeCount'),
+  accept: $('accept'),
+  ignore: $('ignore'),
   clear: $('clear'),
   download: $('download'),
 };
@@ -95,6 +101,13 @@ const state = {
    */
   seedIds: [],
   seedScores: new Map(),
+  /**
+   * What Magpie would add, shown and not taken. Picking two photos says what
+   * you mean; it should not also decide how far that goes without showing you.
+   */
+  proposed: new Set(),
+  /** Set once you refuse, so the same proposal does not come straight back. */
+  proposalRefused: false,
   expandedId: null,
   groups: [],
   notClustered: 0,
@@ -421,6 +434,7 @@ function updateSelectionUi() {
   // Growing needs something to grow from, and nothing else: a single hand-picked
   // tile is a legitimate starting point, and so is the result of the last grow.
   el.grow.disabled = items.length === 0;
+  updateProposal(items);
   showInPage(items);
 
   for (const node of el.body.querySelectorAll('mg-group')) {
@@ -435,6 +449,8 @@ function clearSelection() {
   for (const id of [...state.selected]) setSelected(id, false);
   state.seedIds = [];
   state.seedScores.clear();
+  state.proposed.clear();
+  state.proposalRefused = false;
   for (const tile of el.body.querySelectorAll('mg-item')) tile.score = null;
   updateSelectionUi();
   updateThresholdRead();
@@ -445,6 +461,54 @@ function clearSelection() {
  * Passing the current selection back in is what "grow" does, so the same call
  * serves one example, several, and each step outwards from there.
  */
+/**
+ * "Find similar", asked from the page.
+ *
+ * The match is flashed in place first and taken a beat later, so the answer is
+ * seen happening rather than simply appearing - which is also the only moment
+ * you get to notice it reached somewhere you did not mean.
+ */
+function findSimilarFromPage() {
+  const seeds = selectedItems();
+  if (!seeds.length) return;
+  const matches = selectSimilarToAny(seeds, filtered(), currentThreshold())
+    .map((m) => m.item)
+    .filter((i) => !state.selected.has(i.id));
+  if (!matches.length) return;
+
+  toTab({
+    type: MSG.FLASH_MATCHES,
+    items: matches.map((i) => ({ id: i.elementId || '', url: i.previewUrl || i.url })),
+  });
+  setTimeout(() => {
+    for (const item of matches) setSelected(item.id, true);
+    updateSelectionUi();
+  }, FLASH_MS);
+}
+
+/**
+ * Two or more picked is a statement about what you want; everything like them
+ * is the consequence. The consequence is shown, not applied - the count in the
+ * strip is the part that matters, because it says how far "like these" reaches
+ * before anything moves.
+ * @param {object[]} items
+ */
+function updateProposal(items) {
+  state.proposed.clear();
+  if (items.length >= 2 && !state.proposalRefused) {
+    const matches = selectSimilarToAny(items, filtered(), currentThreshold());
+    for (const m of matches) {
+      if (!state.selected.has(m.item.id)) state.proposed.add(m.item.id);
+    }
+  }
+  el.propose.hidden = state.proposed.size === 0;
+  el.proposeCount.textContent = String(state.proposed.size);
+  for (const tile of el.body.querySelectorAll('mg-item')) {
+    const id = tile.item ? tile.item.id : null;
+    tile.toggleAttribute('proposed', state.proposed.has(id));
+  }
+}
+
 /**
  * Draw the selection in the page itself. The panel is 400px of thumbnails; the
  * photographs are over there, so that is where the set should be visible. Which
@@ -458,7 +522,10 @@ function showInPage(items) {
     mode: el.pickMode.value,
     picking: true,
     chosen: items.map((i) => ({ id: i.elementId || '', url: i.previewUrl || i.url })),
-    pending: [],
+    pending: [...state.proposed]
+      .map((id) => findItem(id))
+      .filter(Boolean)
+      .map((i) => ({ id: i.elementId || '', url: i.previewUrl || i.url })),
   });
 }
 
@@ -1064,6 +1131,19 @@ el.explore.addEventListener('click', async () => {
 // "Select similar" grows from whatever is selected right now - picked by hand,
 // or produced by the last press. Pressing it again walks one step further out.
 el.grow.addEventListener('click', () => applySeeds(selectedItems()));
+el.accept.addEventListener('click', () => {
+  for (const id of state.proposed) setSelected(id, true);
+  state.proposed.clear();
+  updateSelectionUi();
+});
+
+el.ignore.addEventListener('click', () => {
+  // Refused once, and it stays refused until the selection is cleared: a
+  // proposal that returns after you said no is not a proposal.
+  state.proposalRefused = true;
+  updateSelectionUi();
+});
+
 el.pickMode.addEventListener('change', async () => {
   await send({ type: MSG.SET_OPTIONS, options: { pickMode: el.pickMode.value } });
   showInPage(selectedItems());
@@ -1130,9 +1210,25 @@ chrome.runtime.onMessage.addListener((message) => {
   // 80px. The page sends the element it was told to mark; the panel owns what
   // that means.
   if (message.type === MSG.PAGE_PICK) {
+    // The palette in the page is the surface now, so it drives: where it was
+    // docked, what it was asked to find, what it was asked to fetch.
+    if (typeof message.pickMode === 'string') {
+      el.pickMode.value = message.pickMode;
+      send({ type: MSG.SET_OPTIONS, options: { pickMode: message.pickMode } });
+      return;
+    }
+    if (message.findSimilar) {
+      findSimilarFromPage();
+      return;
+    }
+    if (message.download) {
+      downloadItems(selectedItems());
+      return;
+    }
     const item = state.items.find((i) => i.elementId && i.elementId === message.elementId);
     if (!item) return;
-    setSelected(item.id, !state.selected.has(item.id));
+    // A drop says "add"; a click says "toggle".
+    setSelected(item.id, message.add ? true : !state.selected.has(item.id));
     updateSelectionUi();
     return;
   }

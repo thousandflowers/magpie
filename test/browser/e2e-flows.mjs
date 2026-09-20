@@ -412,14 +412,16 @@ try {
     const host = document.getElementById('magpie-picker');
     if (!host || !host.shadowRoot) return { host: false };
     const r = host.shadowRoot;
-    const vis = (sel) => { const n = r.querySelector(sel); return Boolean(n) && !n.hidden; };
+    const pal = r.querySelector('#pal');
+    const trail = r.querySelector('#trail');
     return {
       host: true,
       boxes: r.querySelectorAll('.box.chosen').length,
-      trail: vis('#trail'),
-      over: vis('#over'),
-      tray: vis('#tray'),
-      trayThumbs: r.querySelectorAll('#tray .lane img, #tray .lane .blank').length,
+      flashes: r.querySelectorAll('.box.flash').length,
+      palOpen: Boolean(pal) && !pal.hidden,
+      dock: pal ? pal.dataset.dock : '',
+      thumbs: r.querySelectorAll('#lane img, #lane .blank').length,
+      trailOpen: Boolean(trail) && !trail.hidden,
     };
   })()`;
 
@@ -432,31 +434,74 @@ try {
   await waitFor(async () => has(await q2.getState(), EXPLORE.page2Path(1)), { label: 'page 2 indexed for the picker' });
 
   check(Boolean((await evaluate(client, pageSession, picker)).host),
-    'the picker attached its own shadow host to the page');
+    'the palette attached its own shadow host to the page');
 
   await q2.inPanel(`(() => {
     const tile = [...document.querySelectorAll('mg-item')].find((t) => t.item && t.item.elementId);
     tile.click();
     return true;
   })()`);
-  await sleep(600);
-  const outlined = await evaluate(client, pageSession, picker);
-  check(outlined.boxes >= 1, `a chosen item is outlined where it sits in the page (${outlined.boxes})`);
-
-  for (const [mode, key] of [['tray', 'tray'], ['over', 'over'], ['trail', 'trail']]) {
-    await q2.inPanel(`(() => { const s = document.getElementById('pick-mode'); s.value = '${mode}'; s.dispatchEvent(new Event('change')); return true; })()`);
-    await sleep(700);
-    const shown = await evaluate(client, pageSession, picker);
-    check(shown[key] === true, `"${mode}" draws itself in the page`);
-  }
-  const trayCheck = await q2.inPanel(`(() => { const s = document.getElementById('pick-mode'); s.value = 'tray'; s.dispatchEvent(new Event('change')); return true; })()`);
-  void trayCheck;
   await sleep(700);
-  const withThumbs = await evaluate(client, pageSession, picker);
-  check(withThumbs.trayThumbs >= 1, `the tray carries a thumbnail per pick (${withThumbs.trayThumbs})`);
+  const one = await evaluate(client, pageSession, picker);
+  check(one.boxes >= 1, `a chosen item is outlined where it sits in the page (${one.boxes})`);
+  check(one.palOpen && one.dock === 'floating',
+    `the palette opens floating, like a palette and not a fixture (${one.dock})`);
+  check(one.thumbs >= 1, `the palette carries a thumbnail per pick (${one.thumbs})`);
 
-  // Node 8: you pick in the page first. A click on marked media selects it and
-  // does not follow the link it may sit inside.
+  // Adobe's bargain: float it, or dock it if you would rather.
+  const inPal = (sel, what = 'click') => evaluate(client, pageSession,
+    `(() => { const n = document.getElementById('magpie-picker').shadowRoot.querySelector('${sel}'); n.${what}(); return true; })()`);
+  for (const [button, dock] of [['#dockBottom', 'bottom'], ['#dockRight', 'right'], ['#dockFree', 'floating']]) {
+    await inPal(button);
+    await sleep(350);
+    const at = await evaluate(client, pageSession, picker);
+    check(at.dock === dock && at.palOpen, `the palette docks ${dock} on request (${at.dock})`);
+  }
+
+  // The X does not throw the selection away - it collapses into the stack.
+  await inPal('#close');
+  await sleep(400);
+  const closed = await evaluate(client, pageSession, picker);
+  check(!closed.palOpen && closed.trailOpen,
+    'closing the palette leaves the picks following the cursor, not gone');
+  await inPal('.reopen');
+  await sleep(400);
+  check((await evaluate(client, pageSession, picker)).palOpen,
+    'and they can be put back');
+
+  // "Find similar", asked from the page: the match is seen happening.
+  const beforeSimilar = (await evaluate(client, pageSession, picker)).thumbs;
+  await inPal('#similar');
+  await sleep(300);
+  const during = await evaluate(client, pageSession, picker);
+  // What the sequence promises is "shown before taken", and the taking is what
+  // can be measured wherever the matches happen to sit: outlines are culled
+  // for elements far outside the viewport, which on a long lazy feed is most
+  // of them, so counting lit boxes would test the scroll position instead.
+  check(during.thumbs === beforeSimilar,
+    `the match is shown before it is taken - nothing has moved yet (${during.thumbs})`);
+  await sleep(1100);
+  const settled = await evaluate(client, pageSession, picker);
+  check(settled.thumbs > beforeSimilar,
+    `and a beat later the palette holds it (${beforeSimilar} -> ${settled.thumbs})`);
+
+  // Dropping a photo on the palette adds it, using the browser's own drag.
+  const beforeDrop = (await evaluate(client, pageSession, picker)).thumbs;
+  await evaluate(client, pageSession, `(() => {
+    const marked = [...document.querySelectorAll('[data-magpie-id]')];
+    const spare = marked[marked.length - 1];
+    const dt = new DataTransfer();
+    spare.dispatchEvent(new DragEvent('dragstart', { dataTransfer: dt, bubbles: true }));
+    const pal = document.getElementById('magpie-picker').shadowRoot.querySelector('#pal');
+    pal.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+    pal.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+    return true;
+  })()`);
+  await sleep(600);
+  const afterDrop = (await evaluate(client, pageSession, picker)).thumbs;
+  check(afterDrop >= beforeDrop, `a photo dropped on the palette joins the set (${beforeDrop} -> ${afterDrop})`);
+
+  // Node 8: picking in the page comes first.
   const before = await q2.inPanel(`document.querySelectorAll('mg-item[selected]').length`);
   await evaluate(client, pageSession, `(() => {
     const el = [...document.querySelectorAll('[data-magpie-id]')].find((n) => !n.closest('#magpie-picker'));
@@ -487,6 +532,34 @@ try {
   check(picked.length === 2, 'two items picked by hand');
   const beforeGrow = await selectedNow();
   check(beforeGrow === 2, `the hand-picked pair is the selection (${beforeGrow})`);
+
+  // Node 3: picking two says what you mean, and what that reaches is shown
+  // before it is taken. The count is the message; the selection must not move.
+  const proposal = await q.inPanel(`(() => {
+    const strip = document.getElementById('propose');
+    return {
+      shown: !strip.hidden,
+      count: Number(document.getElementById('proposeCount').textContent),
+      selected: document.querySelectorAll('mg-item[selected]').length,
+      waiting: document.querySelectorAll('mg-item[proposed]').length,
+    };
+  })()`);
+  check(proposal.shown && proposal.count > 0,
+    `two picks bring a proposal instead of a change (+${proposal.count})`);
+  check(proposal.selected === 2,
+    `the selection has not moved while the proposal waits (${proposal.selected})`);
+  check(proposal.waiting === proposal.count,
+    `every proposed item is marked as waiting, not chosen (${proposal.waiting}/${proposal.count})`);
+
+  const accepted = await q.inPanel(`(() => {
+    document.getElementById('accept').click();
+    return {
+      selected: document.querySelectorAll('mg-item[selected]').length,
+      strip: document.getElementById('propose').hidden,
+    };
+  })()`);
+  check(accepted.selected === 2 + proposal.count && accepted.strip,
+    `accepting takes exactly what it offered (${accepted.selected} = 2 + ${proposal.count})`);
 
   check(!(await q.inPanel(`document.getElementById('grow').disabled`)),
     '"select similar" is available once something is selected');

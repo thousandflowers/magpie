@@ -30,10 +30,10 @@
       <label class="filter-field" for="pick-mode">
         <span>show</span>
         <select id="pick-mode" aria-label="How the selection is shown in the page">
-          <option value="place">in place</option>
-          <option value="trail">follow cursor</option>
-          <option value="over">floating</option>
-          <option value="tray">tray</option>
+          <option value="floating">floating</option>
+          <option value="bottom">docked bottom</option>
+          <option value="right">docked right</option>
+          <option value="trail">closed (follows cursor)</option>
         </select>
       </label>
       <button type="button" id="rescan" title="Rescan the page now">rescan</button>
@@ -65,6 +65,14 @@
   </div>
 
   <div class="banner" id="banner" hidden role="status"></div>
+
+  <!-- Node 3: it shows what it is about to take, and waits. The count is the
+       whole message - "these, and eleven more like them" - so it leads. -->
+  <div class="propose" id="propose" hidden role="status">
+    <span>Ne trovo altre <b id="proposeCount">0</b> come queste.</span>
+    <button type="button" id="ignore">no</button>
+    <button type="button" class="accept" id="accept">prendile</button>
+  </div>
 
   <main class="body" id="body">
     <div class="empty" id="empty">

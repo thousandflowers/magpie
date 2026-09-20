@@ -571,3 +571,36 @@ pre.command {
   color: var(--accent);
   background: var(--accent-wash);
 }
+
+/* ---------------------------------------------------------------- *
+ * The proposal
+ *
+ * Between "you picked two" and "you have thirteen" there has to be a moment
+ * you can see and refuse, or the selection moves under your hands.
+ * ---------------------------------------------------------------- */
+
+.propose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px var(--pad);
+  border-bottom: var(--hair) solid var(--rule);
+  background: var(--accent-wash);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+.propose b { font-variant-numeric: tabular-nums; }
+.propose button { min-height: 28px; }
+.propose #ignore { margin-left: auto; }
+.propose .accept {
+  background: var(--ink);
+  color: var(--paper);
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* The waiting state, on the tile: dashed where chosen is solid. */
+mg-item[proposed] .thumb-box { outline: 2px dashed var(--warn); outline-offset: -2px; }

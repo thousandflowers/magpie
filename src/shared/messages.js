@@ -31,6 +31,8 @@ export const MSG = {
   SCAN_NOW: 'scan-now',
   /** Draw the current selection in the page, in one of the picker's modes. */
   SHOW_SELECTION: 'show-selection',
+  /** Light the matches in place for a beat before the palette takes them. */
+  FLASH_MATCHES: 'flash-matches',
   CAPTURE_CANVAS: 'capture-canvas',
   HIGHLIGHT_ITEM: 'highlight-item',
 
