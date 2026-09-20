@@ -29,6 +29,10 @@
     SHOW_SELECTION: 'show-selection',
     PAGE_PICK: 'page-pick',
     FLASH_MATCHES: 'flash-matches',
+    GET_STATE: 'get-state',
+    FIND_SIMILAR: 'find-similar',
+    DOWNLOAD_ITEMS: 'download-items',
+    STATE_UPDATE: 'state-update',
   };
   /** Long enough to register as an event, short enough not to be a wait. */
   const FLASH_MS = 900;
@@ -42,6 +46,15 @@
   let place = { x: null, y: null };
   let flashing = [];
   let flashTimer = null;
+  /**
+   * The palette owns what is picked. It used to be a renderer for the side
+   * panel, which meant nothing at all happened unless that panel was open -
+   * you could click a photograph and watch nothing occur. The surface is here
+   * now, so the state is here too, and the service worker answers it directly.
+   */
+  const picked = new Set();
+  /** elementId -> the indexed item, refreshed whenever the index changes. */
+  let byElement = new Map();
   let frame = null;
 
   /* ------------------------------------------------------------------ *
@@ -233,6 +246,34 @@
   }
 
   const pal = $('#pal');
+  const ask = (message) => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        void chrome.runtime.lastError;
+        resolve(response || null);
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+
+  /** Read the tab's index straight from the worker: no panel in the middle. */
+  async function refreshIndex() {
+    const response = await ask({ type: MSG.GET_STATE });
+    if (!response || !Array.isArray(response.items)) return;
+    byElement = new Map();
+    for (const item of response.items) {
+      if (item.elementId) byElement.set(item.elementId, item);
+    }
+    for (const id of [...picked]) if (!byElement.has(id)) picked.delete(id);
+    render();
+  }
+
+  const asItems = (ids) => [...ids]
+    .map((id) => byElement.get(id))
+    .filter(Boolean)
+    .map((i) => ({ id: i.elementId, url: i.previewUrl || i.url }));
+
   const tell = (message) => {
     try {
       chrome.runtime.sendMessage(message, () => void chrome.runtime.lastError);
@@ -290,8 +331,32 @@
   $('#dockRight').addEventListener('click', () => setMode('right'));
   $('#dockFree').addEventListener('click', () => setMode('floating'));
   $('#close').addEventListener('click', () => setMode('trail'));
-  $('#similar').addEventListener('click', () => tell({ type: MSG.PAGE_PICK, findSimilar: true }));
-  $('#get').addEventListener('click', () => tell({ type: MSG.PAGE_PICK, download: true }));
+  $('#similar').addEventListener('click', findSimilar);
+  $('#get').addEventListener('click', async () => {
+    const ids = [...picked].map((e) => byElement.get(e)).filter(Boolean).map((i) => i.id);
+    if (ids.length) await ask({ type: MSG.DOWNLOAD_ITEMS, ids });
+  });
+
+  /**
+   * Shown, then taken. The match lights in place for a beat before it joins -
+   * which is also the only moment there is to notice it reached somewhere it
+   * should not have.
+   */
+  async function findSimilar() {
+    if (!picked.size) return;
+    const response = await ask({ type: MSG.FIND_SIMILAR, elementIds: [...picked] });
+    const matches = (response && response.items || []).filter((i) => i.elementId);
+    if (!matches.length) return;
+    flashing = matches.map((i) => ({ id: i.elementId, url: i.url }));
+    drawBoxes();
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashing = [];
+      flashTimer = null;
+      for (const m of matches) picked.add(m.elementId);
+      render();
+    }, FLASH_MS);
+  }
 
   // The browser's own drag already carries the image; there is no need to
   // fight it, only to say which element it came from.
@@ -312,17 +377,28 @@
     event.preventDefault();
     pal.classList.remove('over');
     const id = event.dataTransfer && event.dataTransfer.getData('text/magpie-id');
-    if (id) tell({ type: MSG.PAGE_PICK, elementId: id, add: true });
+    if (!id || !byElement.has(id)) return;
+    picked.add(id);
+    render();
+    tell({ type: MSG.PAGE_PICK, elementId: id, add: true });
   });
 
   function render() {
     attach();
+    state.chosen = asItems(picked);
     drawBoxes();
 
     const picks = state.chosen;
     const closed = state.mode === 'trail';
 
-    pal.hidden = closed;
+    // Visible as soon as the page has anything worth picking. Waiting for a
+    // first selection meant the surface was invisible exactly when someone was
+    // looking for it.
+    pal.hidden = closed || byElement.size === 0;
+    // Two numbers the browser checks can read without a console: how much of
+    // the index this palette knows about, and how much of it is picked.
+    pal.dataset.known = String(byElement.size);
+    pal.dataset.picked = String(picked.size);
     pal.dataset.dock = closed ? 'floating' : state.mode;
     applyPlace();
     $('#dockBottom').setAttribute('aria-pressed', String(state.mode === 'bottom'));
@@ -376,12 +452,16 @@
     if (event.target && event.target.closest && event.target.closest('#magpie-picker')) return;
     const marked = event.target && event.target.closest && event.target.closest(`[${ID_ATTR}]`);
     if (!marked) return;
+    const id = marked.getAttribute(ID_ATTR);
+    // Marked but not indexed - a sprite, a tracking pixel, something the
+    // filters dropped. Leave the page alone rather than swallow the click.
+    if (!byElement.has(id)) return;
     event.preventDefault();
     event.stopPropagation();
-    chrome.runtime.sendMessage(
-      { type: MSG.PAGE_PICK, elementId: marked.getAttribute(ID_ATTR) },
-      () => void chrome.runtime.lastError,
-    );
+    if (picked.has(id)) picked.delete(id);
+    else picked.add(id);
+    render();
+    tell({ type: MSG.PAGE_PICK, elementId: id });   // keep an open panel in step
   }, true);
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -398,15 +478,32 @@
       return false;
     }
 
+    if (message.type === MSG.STATE_UPDATE) {
+      refreshIndex();
+      return false;
+    }
+
     if (message.type !== MSG.SHOW_SELECTION) return false;
+    // The panel is another way to pick, not a second opinion: when it speaks,
+    // its set becomes the set. The palette echoes every pick back to it, so the
+    // two converge instead of arguing - and with no panel open, nothing echoes
+    // and the palette simply keeps its own.
+    if (Array.isArray(message.chosen)) {
+      picked.clear();
+      for (const item of message.chosen) if (item && item.id) picked.add(item.id);
+    }
     state = {
       mode: typeof message.mode === 'string' ? message.mode : state.mode,
       picking: message.picking !== false,
-      chosen: Array.isArray(message.chosen) ? message.chosen : [],
+      chosen: asItems(picked),
       pending: Array.isArray(message.pending) ? message.pending : [],
     };
     render();
     sendResponse({ ok: true, drawn: state.chosen.length + state.pending.length, mode: state.mode });
     return false;
   });
+
+  // Nothing drives this from outside any more, so it starts itself.
+  refreshIndex();
+  setTimeout(refreshIndex, 1500);
 })();
