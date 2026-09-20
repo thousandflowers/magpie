@@ -50,6 +50,7 @@ const el = {
   totals: $('totals'),
   search: $('search'),
   threshold: $('threshold'),
+  pickMode: $('pick-mode'),
   thresholdRead: $('threshold-read'),
   rescan: $('rescan'),
   minDim: $('min-dim'),
@@ -181,6 +182,7 @@ async function refresh({ consumeSeed = false } = {}) {
     el.threshold.value = String(resolveThreshold(state.options.threshold));
   }
   updateThresholdRead();
+  if (state.options.pickMode) el.pickMode.value = state.options.pickMode;
 
   // Drop selections whose items are gone (navigation, filter change).
   const live = new Set(state.items.map((i) => i.id));
@@ -419,6 +421,7 @@ function updateSelectionUi() {
   // Growing needs something to grow from, and nothing else: a single hand-picked
   // tile is a legitimate starting point, and so is the result of the last grow.
   el.grow.disabled = items.length === 0;
+  showInPage(items);
 
   for (const node of el.body.querySelectorAll('mg-group')) {
     const tiles = [...node.querySelectorAll('mg-item')];
@@ -442,6 +445,23 @@ function clearSelection() {
  * Passing the current selection back in is what "grow" does, so the same call
  * serves one example, several, and each step outwards from there.
  */
+/**
+ * Draw the selection in the page itself. The panel is 400px of thumbnails; the
+ * photographs are over there, so that is where the set should be visible. Which
+ * of the four ways is right is a question about how it feels, so all four ship
+ * and the switch picks one.
+ * @param {object[]} items
+ */
+function showInPage(items) {
+  toTab({
+    type: MSG.SHOW_SELECTION,
+    mode: el.pickMode.value,
+    picking: true,
+    chosen: items.map((i) => ({ id: i.elementId || '', url: i.previewUrl || i.url })),
+    pending: [],
+  });
+}
+
 /** The seed items still present in the index, as objects. */
 function currentSeeds() {
   return state.seedIds.map((id) => findItem(id)).filter(Boolean);
@@ -1044,6 +1064,11 @@ el.explore.addEventListener('click', async () => {
 // "Select similar" grows from whatever is selected right now - picked by hand,
 // or produced by the last press. Pressing it again walks one step further out.
 el.grow.addEventListener('click', () => applySeeds(selectedItems()));
+el.pickMode.addEventListener('change', async () => {
+  await send({ type: MSG.SET_OPTIONS, options: { pickMode: el.pickMode.value } });
+  showInPage(selectedItems());
+});
+
 el.clear.addEventListener('click', clearSelection);
 el.download.addEventListener('click', () => downloadItems(selectedItems()));
 el.stop.addEventListener('click', () => send({ type: MSG.STOP_DOWNLOADS, sessionId: state.sessionId }));
@@ -1101,6 +1126,16 @@ document.addEventListener('keydown', (event) => {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || typeof message.type !== 'string') return;
+  // Picking happens in the page first: the photographs are there, the tiles are
+  // 80px. The page sends the element it was told to mark; the panel owns what
+  // that means.
+  if (message.type === MSG.PAGE_PICK) {
+    const item = state.items.find((i) => i.elementId && i.elementId === message.elementId);
+    if (!item) return;
+    setSelected(item.id, !state.selected.has(item.id));
+    updateSelectionUi();
+    return;
+  }
   if (message.type === 'explore-progress') {
     if (message.tabId === state.tabId) renderCrawlStatus(message.status);
     return;

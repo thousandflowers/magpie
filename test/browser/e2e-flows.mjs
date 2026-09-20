@@ -403,6 +403,70 @@ try {
   }
   await client.send('Emulation.setEmulatedMedia', { features: [] }, q.panel);
 
+  /* ---- the selection, drawn in the page ---- */
+
+  // The panel is 400px of thumbnails and the photographs are in the page, so
+  // the page is where the set has to be visible. Four ways ship at once
+  // because which one is right is a question about how it feels to use.
+  const picker = `(() => {
+    const host = document.getElementById('magpie-picker');
+    if (!host || !host.shadowRoot) return { host: false };
+    const r = host.shadowRoot;
+    const vis = (sel) => { const n = r.querySelector(sel); return Boolean(n) && !n.hidden; };
+    return {
+      host: true,
+      boxes: r.querySelectorAll('.box.chosen').length,
+      trail: vis('#trail'),
+      over: vis('#over'),
+      tray: vis('#tray'),
+      trayThumbs: r.querySelectorAll('#tray .lane img, #tray .lane .blank').length,
+    };
+  })()`;
+
+  // A one-off address: earlier sections left tabs sitting on /explore/2, and
+  // chrome.tabs.query returns the first match - so the panel was drawing into
+  // a tab from the crawl instead of this one.
+  const pickerUrl = `${site.origin}/explore/2?picker=1`;
+  const pageSession = (await openPage(client, pickerUrl)).session;
+  const q2 = await openPanelFor(client, extensionId, `${site.origin}/explore/2?picker=1`);
+  await waitFor(async () => has(await q2.getState(), EXPLORE.page2Path(1)), { label: 'page 2 indexed for the picker' });
+
+  check(Boolean((await evaluate(client, pageSession, picker)).host),
+    'the picker attached its own shadow host to the page');
+
+  await q2.inPanel(`(() => {
+    const tile = [...document.querySelectorAll('mg-item')].find((t) => t.item && t.item.elementId);
+    tile.click();
+    return true;
+  })()`);
+  await sleep(600);
+  const outlined = await evaluate(client, pageSession, picker);
+  check(outlined.boxes >= 1, `a chosen item is outlined where it sits in the page (${outlined.boxes})`);
+
+  for (const [mode, key] of [['tray', 'tray'], ['over', 'over'], ['trail', 'trail']]) {
+    await q2.inPanel(`(() => { const s = document.getElementById('pick-mode'); s.value = '${mode}'; s.dispatchEvent(new Event('change')); return true; })()`);
+    await sleep(700);
+    const shown = await evaluate(client, pageSession, picker);
+    check(shown[key] === true, `"${mode}" draws itself in the page`);
+  }
+  const trayCheck = await q2.inPanel(`(() => { const s = document.getElementById('pick-mode'); s.value = 'tray'; s.dispatchEvent(new Event('change')); return true; })()`);
+  void trayCheck;
+  await sleep(700);
+  const withThumbs = await evaluate(client, pageSession, picker);
+  check(withThumbs.trayThumbs >= 1, `the tray carries a thumbnail per pick (${withThumbs.trayThumbs})`);
+
+  // Node 8: you pick in the page first. A click on marked media selects it and
+  // does not follow the link it may sit inside.
+  const before = await q2.inPanel(`document.querySelectorAll('mg-item[selected]').length`);
+  await evaluate(client, pageSession, `(() => {
+    const el = [...document.querySelectorAll('[data-magpie-id]')].find((n) => !n.closest('#magpie-picker'));
+    el.click();
+    return true;
+  })()`);
+  await sleep(700);
+  const after = await q2.inPanel(`document.querySelectorAll('mg-item[selected]').length`);
+  check(after !== before, `clicking media in the page changes the selection (${before} -> ${after})`);
+
   /* ---- growing from a set you picked yourself ---- */
 
   // One example cannot always say what you mean. Pick two unlike things by

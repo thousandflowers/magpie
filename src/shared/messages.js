@@ -29,8 +29,13 @@ export const MSG = {
 
   /* background -> content */
   SCAN_NOW: 'scan-now',
+  /** Draw the current selection in the page, in one of the picker's modes. */
+  SHOW_SELECTION: 'show-selection',
   CAPTURE_CANVAS: 'capture-canvas',
   HIGHLIGHT_ITEM: 'highlight-item',
+
+  /* page -> panel */
+  PAGE_PICK: 'page-pick',
 
   /* background -> panel */
   STATE_UPDATE: 'state-update',
