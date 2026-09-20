@@ -361,10 +361,11 @@ try {
     `the slider's settled value persists as a number (${stored})`);
 
   // The readout is a number people read off *while dragging*, so it is body
-  // text, not decoration: it has to clear 4.5:1 in whichever theme the browser
-  // is in. And a range input renders shorter than the 24px floor for a pointer
-  // target unless it is told not to. Both were measured wrong once.
-  const controlAudit = await q.inPanel(`(() => {
+  // text, not decoration: it has to clear 4.5:1. Both themes are checked,
+  // because the first version of this assertion only ever ran in whichever one
+  // the local browser happened to prefer - and the live state, which turns the
+  // number the accent colour, measured 3.5:1 on the light paper.
+  const CONTRAST_PROBE = `(() => {
     const lum = (c) => {
       const [r, g, b] = c.match(/[\\d.]+/g).slice(0, 3).map(Number).map((v) => {
         const s = v / 255;
@@ -385,13 +386,22 @@ try {
     const [hi, lo] = [lum(getComputedStyle(read).color), lum(bgOf(read))].sort((a, b) => b - a);
     return {
       contrast: (hi + 0.05) / (lo + 0.05),
+      live: read.dataset.live,
       sliderHeight: document.getElementById('threshold').getBoundingClientRect().height,
     };
-  })()`);
-  check(controlAudit.contrast >= 4.5,
-    `the slider's readout clears 4.5:1 (${controlAudit.contrast.toFixed(2)}:1)`);
-  check(controlAudit.sliderHeight >= 24,
-    `the slider is at least 24px tall to aim at (${Math.round(controlAudit.sliderHeight)}px)`);
+  })()`;
+
+  for (const scheme of ['light', 'dark']) {
+    await client.send('Emulation.setEmulatedMedia',
+      { features: [{ name: 'prefers-color-scheme', value: scheme }] }, q.panel);
+    await sleep(250);
+    const audit = await q.inPanel(CONTRAST_PROBE);
+    check(audit.contrast >= 4.5,
+      `the readout clears 4.5:1 in ${scheme} while live=${audit.live} (${audit.contrast.toFixed(2)}:1)`);
+    check(audit.sliderHeight >= 24,
+      `the slider is at least 24px tall to aim at in ${scheme} (${Math.round(audit.sliderHeight)}px)`);
+  }
+  await client.send('Emulation.setEmulatedMedia', { features: [] }, q.panel);
 
   /* ---- growing from a set you picked yourself ---- */
 

@@ -210,8 +210,14 @@ input[type="text"], input[type="search"], input[type="number"], select {
   white-space: nowrap;
 }
 /* While a seed is active the number is what decides the selection, so it stops
-   being a caption and starts being the answer. */
-#threshold-read[data-live="1"] { color: var(--accent); }
+   being a caption and starts being the answer.
+   Weight, not the accent colour: #e8552d on the light paper measures 3.5:1,
+   under the floor for text this size - and this is the one number people read
+   while dragging. The accent still marks the control, on the slider's thumb. */
+#threshold-read[data-live="1"] {
+  color: var(--ink);
+  font-weight: 600;
+}
 
 /* ---------------------------------------------------------------- *
  * Banners
