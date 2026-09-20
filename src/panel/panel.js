@@ -10,7 +10,7 @@ import './components/mg-item.js';
 import './components/mg-group.js';
 
 import {
-  cluster, clusterChunked, selectSimilar, describeGroup,
+  cluster, clusterChunked, selectSimilarToAny, describeGroup,
 } from '../core/similarity.js';
 import {
   SIMILARITY_RANGE, FILTER_CONFIG, resolveThreshold, thresholdName,
@@ -70,6 +70,7 @@ const el = {
   stop: $('stop'),
   template: $('template'),
   selection: $('selection'),
+  grow: $('grow'),
   clear: $('clear'),
   download: $('download'),
 };
@@ -86,7 +87,12 @@ const state = {
   historyCount: 0,
   emeRequested: false,
   selected: new Set(),
-  seedId: null,
+  /**
+   * The items the current selection was grown from. A set, not one item: two
+   * or three examples say what you mean where one cannot, and growing again
+   * from the result is how you walk outwards.
+   */
+  seedIds: [],
   seedScores: new Map(),
   expandedId: null,
   groups: [],
@@ -182,7 +188,7 @@ async function refresh({ consumeSeed = false } = {}) {
 
   if (consumeSeed && response.seed) {
     const seedItem = state.items.find((i) => i.normalizedUrl === response.seed);
-    if (seedItem) applySeed(seedItem);
+    if (seedItem) applySeeds([seedItem]);
   }
 
   await render();
@@ -205,9 +211,9 @@ function currentThreshold() {
 function updateThresholdRead() {
   const value = currentThreshold();
   const parts = [value.toFixed(2), thresholdName(value)];
-  if (state.seedId) parts.push(`· ${state.selected.size} selected`);
+  if (state.seedIds.length) parts.push(`· ${state.selected.size} selected`);
   el.thresholdRead.textContent = parts.join(' ');
-  el.thresholdRead.dataset.live = state.seedId ? '1' : '0';
+  el.thresholdRead.dataset.live = state.seedIds.length ? '1' : '0';
 }
 
 function filtered() {
@@ -410,6 +416,9 @@ function updateSelectionUi() {
     el.selection.appendChild(note);
   }
   el.download.disabled = downloadable.length === 0;
+  // Growing needs something to grow from, and nothing else: a single hand-picked
+  // tile is a legitimate starting point, and so is the result of the last grow.
+  el.grow.disabled = items.length === 0;
 
   for (const node of el.body.querySelectorAll('mg-group')) {
     const tiles = [...node.querySelectorAll('mg-item')];
@@ -421,18 +430,28 @@ function updateSelectionUi() {
 
 function clearSelection() {
   for (const id of [...state.selected]) setSelected(id, false);
-  state.seedId = null;
+  state.seedIds = [];
   state.seedScores.clear();
   for (const tile of el.body.querySelectorAll('mg-item')) tile.score = null;
   updateSelectionUi();
   updateThresholdRead();
 }
 
-/** Re-run scoring with this item as the seed and select everything similar. */
-function applySeed(seed) {
+/**
+ * Re-run scoring against these seeds and select everything like any of them.
+ * Passing the current selection back in is what "grow" does, so the same call
+ * serves one example, several, and each step outwards from there.
+ */
+/** The seed items still present in the index, as objects. */
+function currentSeeds() {
+  return state.seedIds.map((id) => findItem(id)).filter(Boolean);
+}
+
+function applySeeds(seeds) {
+  if (!seeds.length) return;
   const threshold = currentThreshold();
-  const matches = selectSimilar(seed, filtered(), threshold);
-  state.seedId = seed.id;
+  const matches = selectSimilarToAny(seeds, filtered(), threshold);
+  state.seedIds = seeds.map((s) => s.id);
   state.seedScores = new Map(matches.map((m) => [m.item.id, m.score]));
   state.selected = new Set(matches.map((m) => m.item.id));
   for (const tile of el.body.querySelectorAll('mg-item')) {
@@ -515,7 +534,7 @@ function showDetail(item) {
     button('open in new tab', () => chrome.tabs.create({ url: item.url, active: false }), {
       disabled: item.url.startsWith('magpie-'),
     }),
-    button('select similar to this', () => applySeed(item)),
+    button('select similar to this', () => applySeeds([item])),
   );
   if (item.elementId) {
     actions.appendChild(
@@ -823,7 +842,7 @@ async function downloadItems(items) {
     ids: network.map((i) => i.id),
     template: el.template.value || DEFAULT_TEMPLATE,
     writeSidecar: Boolean(state.options.writeSidecar),
-    groupLabel: state.seedId ? 'similar' : '',
+    groupLabel: state.seedIds.length ? 'similar' : '',
   });
   if (response.ok) {
     state.sessionId = response.sessionId;
@@ -949,19 +968,15 @@ el.search.addEventListener('input', () => {
 let regroupTimer = null;
 
 el.threshold.addEventListener('input', () => {
-  if (state.seedId) {
-    const seed = findItem(state.seedId);
-    if (seed) applySeed(seed); // also refreshes the readout
-    else updateThresholdRead();
-  } else {
-    updateThresholdRead();
-  }
+  const seeds = currentSeeds();
+  if (seeds.length) applySeeds(seeds); // also refreshes the readout
+  else updateThresholdRead();
   if (regroupTimer) clearTimeout(regroupTimer);
   regroupTimer = setTimeout(async () => {
     regroupTimer = null;
     await render();
-    const seed = state.seedId ? findItem(state.seedId) : null;
-    if (seed) applySeed(seed); // render() rebuilt the tiles; re-mark them
+    const again = currentSeeds();
+    if (again.length) applySeeds(again); // render() rebuilt the tiles; re-mark them
   }, 200);
 });
 
@@ -1026,6 +1041,9 @@ el.explore.addEventListener('click', async () => {
   renderCrawlStatus(response.status);
 });
 
+// "Select similar" grows from whatever is selected right now - picked by hand,
+// or produced by the last press. Pressing it again walks one step further out.
+el.grow.addEventListener('click', () => applySeeds(selectedItems()));
 el.clear.addEventListener('click', clearSelection);
 el.download.addEventListener('click', () => downloadItems(selectedItems()));
 el.stop.addEventListener('click', () => send({ type: MSG.STOP_DOWNLOADS, sessionId: state.sessionId }));
@@ -1141,8 +1159,8 @@ chrome.tabs.onActivated.addListener(async () => {
   const crawl = await send({ type: 'explore-status' });
   if (crawl.ok && crawl.status) renderCrawlStatus(crawl.status);
   // A seed arriving from the context menu should be visible immediately.
-  if (state.seedId) {
-    const tile = document.getElementById(`item-${state.seedId}`);
+  if (state.seedIds.length) {
+    const tile = document.getElementById(`item-${state.seedIds[0]}`);
     if (tile) tile.scrollIntoView({ block: 'center' });
   }
 })();

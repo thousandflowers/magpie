@@ -345,11 +345,64 @@ try {
   check(/0\.35/.test(readout) && /loose/.test(readout) && /selected/.test(readout),
     `the readout says the number, the band and the count ("${readout}")`);
 
+  // The floor has to mean what it says. A slider that still refuses things at
+  // its lowest setting is a slider lying about its own range.
+  await drag(0);
+  await sleep(700);
+  const shown = await q.inPanel(`document.querySelectorAll('mg-item').length`);
+  const atZero = await selectedNow();
+  check(atZero === shown && shown > 0,
+    `at 0 the whole page is taken (${atZero} of ${shown} shown)`);
+
   await drag(0.8);
   await sleep(400);
   const stored = (await q.getState()).options.threshold;
   check(Math.abs(Number(stored) - 0.8) < 1e-6,
     `the slider's settled value persists as a number (${stored})`);
+
+  /* ---- growing from a set you picked yourself ---- */
+
+  // One example cannot always say what you mean. Pick two unlike things by
+  // hand, press "select similar", and both families have to come back - then
+  // pressing it again must not lose what it already had.
+  await q.inPanel(`document.getElementById('clear').click(), true`);
+  await sleep(200);
+  const picked = await q.inPanel(`(() => {
+    const tiles = [...document.querySelectorAll('mg-item')].filter((t) => t.item);
+    // Two that score badly against each other, so one seed could not reach both.
+    const first = tiles[0];
+    const far = tiles.slice(1).find((t) => t.item.kind !== first.item.kind)
+      || tiles[tiles.length - 1];
+    first.click();
+    far.click();
+    return [first.item.url, far.item.url];
+  })()`);
+  check(picked.length === 2, 'two items picked by hand');
+  const beforeGrow = await selectedNow();
+  check(beforeGrow === 2, `the hand-picked pair is the selection (${beforeGrow})`);
+
+  check(!(await q.inPanel(`document.getElementById('grow').disabled`)),
+    '"select similar" is available once something is selected');
+  await q.inPanel(`document.getElementById('grow').click(), true`);
+  await sleep(700);
+  const afterGrow = await selectedNow();
+  check(afterGrow >= beforeGrow,
+    `growing from two seeds keeps them and adds more (${beforeGrow} -> ${afterGrow})`);
+  const keptSeeds = await q.inPanel(`(() => {
+    const urls = [...document.querySelectorAll('mg-item[selected]')].map((t) => t.item.url);
+    return ${JSON.stringify(picked)}.every((u) => urls.includes(u));
+  })()`);
+  check(keptSeeds, 'both seeds are still in the result of growing from them');
+
+  // And again, from the result: this is how you walk outwards.
+  await q.inPanel(`document.getElementById('grow').click(), true`);
+  await sleep(700);
+  const afterSecondGrow = await selectedNow();
+  check(afterSecondGrow >= afterGrow,
+    `growing again never loses ground (${afterGrow} -> ${afterSecondGrow})`);
+  await q.inPanel(`document.getElementById('clear').click(), true`);
+  check(await q.inPanel(`document.getElementById('grow').disabled`),
+    '"select similar" goes back to unavailable with nothing selected');
   const template = 'magpie/{host}/{index}-{basename}.{ext}';
   await q.inPanel(`(() => { const t = document.getElementById('template'); t.value = ${JSON.stringify(template)}; t.dispatchEvent(new Event('change')); return true; })()`);
   await sleep(500);

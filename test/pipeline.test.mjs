@@ -556,7 +556,19 @@ test('a number is kept, and clamped to the band the slider moves through', () =>
   assert.equal(resolveThreshold(0.71), 0.71);
   assert.equal(resolveThreshold('0.71'), 0.71);
   assert.equal(resolveThreshold(5), SIMILARITY_RANGE.max);
-  assert.equal(resolveThreshold(0.01), SIMILARITY_RANGE.min);
+  assert.equal(resolveThreshold(-1), SIMILARITY_RANGE.min);
+});
+
+test('zero is a real setting, not a missing one', () => {
+  // The slider's floor has to mean "take everything". An empty or absent
+  // option must not: `Number('')` and `Number(null)` are both 0, which would
+  // turn a blank setting into a whole-page selection.
+  assert.equal(resolveThreshold(0), 0);
+  assert.equal(resolveThreshold('0'), 0);
+  assert.equal(SIMILARITY_RANGE.min, 0);
+  assert.equal(resolveThreshold(''), SIMILARITY_PRESETS.balanced);
+  assert.equal(resolveThreshold(null), SIMILARITY_PRESETS.balanced);
+  assert.equal(resolveThreshold(undefined), SIMILARITY_PRESETS.balanced);
 });
 
 test('every preset sits inside the band, or the slider could not reach it', () => {

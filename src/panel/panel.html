@@ -18,7 +18,7 @@
       <label class="filter-field threshold-field" for="threshold">
         <span>similarity</span>
         <input type="range" id="threshold" list="threshold-marks"
-               min="0.3" max="0.95" step="0.01" value="0.62"
+               min="0" max="0.95" step="0.01" value="0.62"
                aria-label="How alike two items must be to count as the same set">
         <output id="threshold-read" for="threshold">0.62 balanced</output>
       </label>
@@ -83,6 +83,8 @@
     </div>
     <div class="footer-row">
       <span class="selection" id="selection"><b>0</b> selected · 0 B</span>
+      <button type="button" id="grow" disabled
+              title="Take everything on the page that is like what you have selected. Press it again to keep walking outwards.">select similar</button>
       <button type="button" id="clear">clear</button>
       <button type="button" class="primary" id="download" disabled>download</button>
     </div>

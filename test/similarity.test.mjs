@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  score, explain, cluster, clusterChunked, selectSimilar, describeGroup,
+  score, explain, cluster, clusterChunked, selectSimilar, selectSimilarToAny, describeGroup,
   stripDynamicClasses, structuralSimilarity, urlPatternSimilarity,
   dimensionSimilarity, typeSimilarity, hostSimilarity, DEFAULT_THRESHOLD,
   classEntropy, ENTROPY_THRESHOLD, MAX_DYNAMIC_FREQUENCY, NEUTRAL_STRUCTURE,
@@ -416,4 +416,64 @@ test('two genuinely different repeated groups still score a hard 0', () => {
   ];
   const tile = gridItem('https://e.com/p/one.jpg', { inRepeatedGroup: true, repeatDepth: 1 });
   assert.equal(structuralSimilarity(carousel, tile), 0);
+});
+
+/* ------------------------------------------------------------------ *
+ * Growing from more than one example
+ * ------------------------------------------------------------------ */
+
+const shot = (url, extra = {}) => ({
+  id: url, url, normalizedUrl: url, kind: 'image', mimeType: 'image/jpeg',
+  width: 800, height: 600, ...extra,
+});
+
+test('a seed set takes what is like ANY of its members', () => {
+  const photo = shot('https://cdn.a.com/photos/one.jpg');
+  const photo2 = shot('https://cdn.a.com/photos/two.jpg');
+  const chart = shot('https://cdn.b.com/charts/first.png', { mimeType: 'image/png', width: 300, height: 200 });
+  const chart2 = shot('https://cdn.b.com/charts/second.png', { mimeType: 'image/png', width: 300, height: 200 });
+  const pool = [photo, photo2, chart, chart2];
+
+  // One photo alone cannot reach the charts...
+  const fromOne = selectSimilar(photo, pool, 0.62).map((m) => m.item.id);
+  assert.ok(!fromOne.includes(chart.id), 'a chart is not like a photo');
+
+  // ...but picking one of each says "more like these", and takes both families.
+  const fromBoth = selectSimilarToAny([photo, chart], pool, 0.62).map((m) => m.item.id);
+  for (const item of pool) {
+    assert.ok(fromBoth.includes(item.id), `${item.id} was left out of a two-seed grow`);
+  }
+});
+
+test('a seed is always in its own result, whatever the threshold', () => {
+  const a = shot('https://cdn.a.com/photos/one.jpg');
+  const b = shot('https://cdn.b.com/other/thing.png', { mimeType: 'image/png' });
+  const picked = selectSimilarToAny([a, b], [a, b], 0.95).map((m) => m.item.id);
+  assert.deepEqual(picked.sort(), [a.id, b.id].sort());
+});
+
+test('at zero, everything on the page comes back', () => {
+  // Every term of the score is non-negative, so nothing can fail a zero test.
+  // This is what the slider's floor promises, and it is worth pinning down.
+  const pool = [
+    shot('https://cdn.a.com/photos/one.jpg'),
+    shot('https://elsewhere.example/x/y.png', { mimeType: 'image/png', width: 10, height: 10 }),
+    shot('https://third.test/clip.webm', { kind: 'video', mimeType: 'video/webm' }),
+  ];
+  assert.equal(selectSimilarToAny([pool[0]], pool, 0).length, pool.length);
+  assert.equal(selectSimilar(pool[0], pool, 0).length, pool.length);
+});
+
+test('growing again from a result takes at least what it already had', () => {
+  const pool = [
+    shot('https://cdn.a.com/photos/one.jpg'),
+    shot('https://cdn.a.com/photos/two.jpg'),
+    shot('https://cdn.a.com/photos/three.jpg'),
+    shot('https://cdn.b.com/charts/first.png', { mimeType: 'image/png', width: 300, height: 200 }),
+  ];
+  const first = selectSimilarToAny([pool[0]], pool, 0.62).map((m) => m.item);
+  const second = selectSimilarToAny(first, pool, 0.62).map((m) => m.item.id);
+  for (const item of first) {
+    assert.ok(second.includes(item.id), `${item.id} was dropped by growing from itself`);
+  }
 });
