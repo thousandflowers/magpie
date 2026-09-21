@@ -188,6 +188,37 @@ input[type="text"], input[type="search"], input[type="number"], select {
 }
 .filter-field input[type="number"] { width: 62px; }
 
+/* The similarity slider. It is the one control people reach for twice in a
+   row, so it carries its own value: dragging without a readout is guessing. */
+.threshold-field { gap: 6px; }
+.threshold-field input[type="range"] {
+  width: 92px;
+  /* 24px is the smallest a pointer target may be on the web (WCAG 2.5.8).
+     A range input renders shorter than that by default - measured at 22px -
+     and the thumb is the part you have to hit. */
+  min-height: 24px;
+  accent-color: var(--accent);
+  margin: 0;
+}
+#threshold-read {
+  min-width: 74px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  /* --ink-3 measured 4.0:1 here, under the 4.5:1 floor for normal text. This
+     is a number people read off while dragging, not a decorative caption. */
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+/* While a seed is active the number is what decides the selection, so it stops
+   being a caption and starts being the answer.
+   Weight, not the accent colour: #e8552d on the light paper measures 3.5:1,
+   under the floor for text this size - and this is the one number people read
+   while dragging. The accent still marks the control, on the slider's thumb. */
+#threshold-read[data-live="1"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 /* ---------------------------------------------------------------- *
  * Banners
  * ---------------------------------------------------------------- */
@@ -540,3 +571,36 @@ pre.command {
   color: var(--accent);
   background: var(--accent-wash);
 }
+
+/* ---------------------------------------------------------------- *
+ * The proposal
+ *
+ * Between "you picked two" and "you have thirteen" there has to be a moment
+ * you can see and refuse, or the selection moves under your hands.
+ * ---------------------------------------------------------------- */
+
+.propose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px var(--pad);
+  border-bottom: var(--hair) solid var(--rule);
+  background: var(--accent-wash);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+.propose b { font-variant-numeric: tabular-nums; }
+.propose button { min-height: 28px; }
+.propose #ignore { margin-left: auto; }
+.propose .accept {
+  background: var(--ink);
+  color: var(--paper);
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* The waiting state, on the tile: dashed where chosen is solid. */
+mg-item[proposed] .thumb-box { outline: 2px dashed var(--warn); outline-offset: -2px; }

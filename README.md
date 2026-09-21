@@ -35,11 +35,18 @@ without touching the network. An item seen by both the DOM and the network is
 `confirmed` and sorts first.
 
 **Similarity** is `0.35·url + 0.25·structure + 0.20·dimensions + 0.10·type +
-0.10·host`, cut at `loose 0.45 / balanced 0.62 / strict 0.80`, clustered with
+0.10·host`, cut wherever the panel's similarity slider is set, clustered with
 single linkage. The structure term has three states: a score, `0` when two items
 are known to sit in *different* repeated groups (a carousel is not the grid
 below it), and a neutral `0.5` when either item has no DOM at all - absence of
 evidence must not be counted as evidence of difference.
+
+Where to cut is a judgement about *this* page, not a constant, so it is a
+slider rather than a setting: drag it and the selection grows or shrinks under
+your hand, with the number, the band it reads as (`loose` 0.45, `balanced`
+0.62, `strict` 0.80) and the count of what is currently taken written beside
+it. Re-selecting is linear, so it happens on every frame of the drag;
+re-grouping is quadratic, so it waits for you to stop.
 
 ---
 

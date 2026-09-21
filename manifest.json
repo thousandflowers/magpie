@@ -46,7 +46,8 @@
       "world": "ISOLATED",
       "js": [
         "src/content/isolated.js",
-        "src/content/explorer.js"
+        "src/content/explorer.js",
+        "src/content/picker.js"
       ]
     }
   ],

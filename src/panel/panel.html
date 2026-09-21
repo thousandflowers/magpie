@@ -15,12 +15,25 @@
     </div>
     <div class="header-controls">
       <input type="search" id="search" placeholder="filter by URL…" aria-label="Filter items by URL substring">
-      <label class="filter-field" for="threshold">
+      <label class="filter-field threshold-field" for="threshold">
         <span>similarity</span>
-        <select id="threshold" aria-label="Similarity threshold">
-          <option value="loose">loose</option>
-          <option value="balanced" selected>balanced</option>
-          <option value="strict">strict</option>
+        <input type="range" id="threshold" list="threshold-marks"
+               min="0" max="0.95" step="0.01" value="0.62"
+               aria-label="How alike two items must be to count as the same set">
+        <output id="threshold-read" for="threshold">0.62 balanced</output>
+      </label>
+      <datalist id="threshold-marks">
+        <option value="0.45" label="loose"></option>
+        <option value="0.62" label="balanced"></option>
+        <option value="0.8" label="strict"></option>
+      </datalist>
+      <label class="filter-field" for="pick-mode">
+        <span>show</span>
+        <select id="pick-mode" aria-label="How the selection is shown in the page">
+          <option value="floating">floating</option>
+          <option value="bottom">docked bottom</option>
+          <option value="right">docked right</option>
+          <option value="trail">closed (follows cursor)</option>
         </select>
       </label>
       <button type="button" id="rescan" title="Rescan the page now">rescan</button>
@@ -53,17 +66,32 @@
 
   <div class="banner" id="banner" hidden role="status"></div>
 
+  <!-- Node 3: it shows what it is about to take, and waits. The count is the
+       whole message - "these, and eleven more like them" - so it leads. -->
+  <div class="propose" id="propose" hidden role="status">
+    <span>Ne trovo altre <b id="proposeCount">0</b> come queste.</span>
+    <button type="button" id="ignore">no</button>
+    <button type="button" class="accept" id="accept">prendile</button>
+  </div>
+
   <main class="body" id="body">
     <div class="empty" id="empty">
-      Nothing found yet. Scroll the page, or press <kbd>rescan</kbd>.
+      Nothing found yet. Press <kbd>explore</kbd> and Magpie walks the site
+      itself - scrolling, opening what hides media, following its links - or
+      <kbd>rescan</kbd> to re-read this page as it stands.
     </div>
   </main>
 
   <section class="detail" id="detail" hidden aria-label="Item detail"></section>
 
   <footer class="footer">
+    <!-- Deliberately phrased as a conditional, not an invitation: nobody should
+         be recording a HAR to get more media out of a page. That is what
+         `explore` is for. This is here for a capture you already have - from a
+         session before the extension was installed, or one that holds the
+         bytes so the files can be saved with the network off. -->
     <div class="dropzone" id="dropzone">
-      drop a .har file here to merge a DevTools capture
+      already have a DevTools .har? drop it here
       <input type="file" id="har-input" accept=".har,application/json" hidden>
     </div>
     <div class="progress" id="progress" hidden>
@@ -79,6 +107,8 @@
     </div>
     <div class="footer-row">
       <span class="selection" id="selection"><b>0</b> selected · 0 B</span>
+      <button type="button" id="grow" disabled
+              title="Take everything on the page that is like what you have selected. Press it again to keep walking outwards.">select similar</button>
       <button type="button" id="clear">clear</button>
       <button type="button" class="primary" id="download" disabled>download</button>
     </div>

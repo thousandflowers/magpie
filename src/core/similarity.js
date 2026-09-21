@@ -384,6 +384,41 @@ export function explain(a, b) {
  * Everything similar to `seed`, best first. The seed itself is included.
  * @returns {Array<{item: object, score: number}>}
  */
+/**
+ * Everything like *any* of these seeds.
+ *
+ * One example is often not enough to say what you mean: a gallery can hold two
+ * shapes of the same set, and a page can hold a set the scoring splits. Picking
+ * two or three by hand and growing from all of them says "more like these",
+ * which is a different question from "more like this one" - and running it
+ * again on the result is how you walk outwards from what you have.
+ *
+ * Max, not mean: similar to one of the things you picked is enough. An average
+ * would punish a candidate for being unlike the seeds you chose precisely
+ * because they differ from each other.
+ *
+ * @param {object[]} seeds
+ * @param {object[]} candidates
+ * @param {number} threshold
+ * @returns {{item: object, score: number}[]} best score first
+ */
+export function selectSimilarToAny(seeds, candidates, threshold = DEFAULT_THRESHOLD) {
+  const chosen = new Set(seeds);
+  const out = [];
+  for (const c of candidates) {
+    let best = chosen.has(c) ? 1 : 0;
+    if (best < 1) {
+      for (const seed of seeds) {
+        const s = score(seed, c);
+        if (s > best) best = s;
+      }
+    }
+    if (best >= threshold) out.push({ item: c, score: best });
+  }
+  out.sort((x, y) => y.score - x.score);
+  return out;
+}
+
 export function selectSimilar(seed, candidates, threshold = DEFAULT_THRESHOLD) {
   const out = [];
   for (const c of candidates) {

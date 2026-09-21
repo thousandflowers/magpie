@@ -17,6 +17,8 @@ import {
   resumeSessions,
 } from './downloader.js';
 import { createMenus, installMenuHandlers } from './context-menus.js';
+import { selectSimilarToAny } from '../core/similarity.js';
+import { resolveThreshold } from '../core/media-types.js';
 import { verifyBatch, loadSiteRules } from './upgrade-verify.js';
 import {
   EXPLORE_MSG, startCrawl, stopCrawl, judgeCandidates, acceptLinks,
@@ -400,6 +402,28 @@ const handlers = {
     const result = await verifyBatch(tabId, pool);
     refreshPanel(tabId);
     return { ok: true, ...result };
+  },
+
+  /**
+   * Everything like the given elements, answered here rather than in the
+   * panel. The palette lives in the page and a content script cannot import a
+   * module, so the engine has to be reached across a message - and the panel
+   * is no longer required to be open for the page to work.
+   */
+  async ['find-similar'](message, sender) {
+    const tabId = tabIdFor(message, sender);
+    if (tabId == null) return { ok: false, items: [] };
+    const state = await getTab(tabId);
+    const options = await getOptions();
+    const all = itemsOf(state);
+    const wanted = new Set(message.elementIds || []);
+    const seeds = all.filter((i) => i.elementId && wanted.has(i.elementId));
+    if (!seeds.length) return { ok: true, items: [] };
+    const threshold = resolveThreshold(options.threshold);
+    const matches = selectSimilarToAny(seeds, all, threshold)
+      .map((m) => m.item)
+      .filter((i) => !wanted.has(i.elementId));
+    return { ok: true, items: matches.map((i) => ({ id: i.id, elementId: i.elementId || '', url: i.previewUrl || i.url })) };
   },
 
   async [MSG.DOWNLOAD_ITEMS](message, sender) {

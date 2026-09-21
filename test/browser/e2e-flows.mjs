@@ -317,9 +317,272 @@ try {
   check(similar.length >= EXPLORE.page2 && range(EXPLORE.page2).every((n) => similar.some((u) => u.endsWith(EXPLORE.page2Path(n)))),
     `"select similar" from one page-2 image takes its grid (${similar.length} selected)`);
 
-  await q.inPanel(`(() => { const s = document.getElementById('threshold'); s.value = 'strict'; s.dispatchEvent(new Event('change')); return true; })()`);
+  // The slider is the control people reach for twice in a row: pick one photo,
+  // then widen until the set looks right. Loosening has to take *more*, and the
+  // panel has to say so while the slider is still moving - a filter you cannot
+  // feel is a filter you cannot aim.
+  const drag = (value) => q.inPanel(`(() => {
+    const s = document.getElementById('threshold');
+    s.value = '${value}';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  const selectedNow = () => q.inPanel(`document.querySelectorAll('mg-item[selected]').length`);
+
+  // The seed from the assertion above is still active - that is the state the
+  // slider is meant to be adjusted in.
+  await drag(0.9);
   await sleep(500);
-  check((await q.getState()).options.threshold === 'strict', 'the similarity threshold persists as an option');
+  const atStrict = await selectedNow();
+  await drag(0.35);
+  await sleep(500);
+  const atLoose = await selectedNow();
+  check(atLoose > atStrict,
+    `loosening the slider takes more, not fewer (strict ${atStrict} -> loose ${atLoose})`);
+
+  const readout = await q.inPanel(`document.getElementById('threshold-read').textContent`);
+  check(/0\.35/.test(readout) && /loose/.test(readout) && /selected/.test(readout),
+    `the readout says the number, the band and the count ("${readout}")`);
+
+  // The floor has to mean what it says. A slider that still refuses things at
+  // its lowest setting is a slider lying about its own range.
+  await drag(0);
+  await sleep(700);
+  const shown = await q.inPanel(`document.querySelectorAll('mg-item').length`);
+  const atZero = await selectedNow();
+  check(atZero === shown && shown > 0,
+    `at 0 the whole page is taken (${atZero} of ${shown} shown)`);
+
+  await drag(0.8);
+  await sleep(400);
+  const stored = (await q.getState()).options.threshold;
+  check(Math.abs(Number(stored) - 0.8) < 1e-6,
+    `the slider's settled value persists as a number (${stored})`);
+
+  // The readout is a number people read off *while dragging*, so it is body
+  // text, not decoration: it has to clear 4.5:1. Both themes are checked,
+  // because the first version of this assertion only ever ran in whichever one
+  // the local browser happened to prefer - and the live state, which turns the
+  // number the accent colour, measured 3.5:1 on the light paper.
+  const CONTRAST_PROBE = `(() => {
+    const lum = (c) => {
+      const [r, g, b] = c.match(/[\\d.]+/g).slice(0, 3).map(Number).map((v) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const bgOf = (el) => {
+      let n = el;
+      while (n) {
+        const c = getComputedStyle(n).backgroundColor;
+        if (c && !/rgba\\(0, 0, 0, 0\\)|transparent/.test(c)) return c;
+        n = n.parentElement;
+      }
+      return 'rgb(255, 255, 255)';
+    };
+    const read = document.getElementById('threshold-read');
+    const [hi, lo] = [lum(getComputedStyle(read).color), lum(bgOf(read))].sort((a, b) => b - a);
+    return {
+      contrast: (hi + 0.05) / (lo + 0.05),
+      live: read.dataset.live,
+      sliderHeight: document.getElementById('threshold').getBoundingClientRect().height,
+    };
+  })()`;
+
+  for (const scheme of ['light', 'dark']) {
+    await client.send('Emulation.setEmulatedMedia',
+      { features: [{ name: 'prefers-color-scheme', value: scheme }] }, q.panel);
+    await sleep(250);
+    const audit = await q.inPanel(CONTRAST_PROBE);
+    check(audit.contrast >= 4.5,
+      `the readout clears 4.5:1 in ${scheme} while live=${audit.live} (${audit.contrast.toFixed(2)}:1)`);
+    check(audit.sliderHeight >= 24,
+      `the slider is at least 24px tall to aim at in ${scheme} (${Math.round(audit.sliderHeight)}px)`);
+  }
+  await client.send('Emulation.setEmulatedMedia', { features: [] }, q.panel);
+
+  /* ---- the selection, drawn in the page ---- */
+
+  // The panel is 400px of thumbnails and the photographs are in the page, so
+  // the page is where the set has to be visible. Four ways ship at once
+  // because which one is right is a question about how it feels to use.
+  const picker = `(() => {
+    const host = document.getElementById('magpie-picker');
+    if (!host || !host.shadowRoot) return { host: false };
+    const r = host.shadowRoot;
+    const pal = r.querySelector('#pal');
+    const trail = r.querySelector('#trail');
+    return {
+      host: true,
+      boxes: r.querySelectorAll('.box.chosen').length,
+      flashes: r.querySelectorAll('.box.flash').length,
+      palOpen: Boolean(pal) && !pal.hidden,
+      dock: pal ? pal.dataset.dock : '',
+      thumbs: r.querySelectorAll('#lane img, #lane .blank').length,
+      trailOpen: Boolean(trail) && !trail.hidden,
+    };
+  })()`;
+
+  // A one-off address: earlier sections left tabs sitting on /explore/2, and
+  // chrome.tabs.query returns the first match - so the panel was drawing into
+  // a tab from the crawl instead of this one.
+  const pickerUrl = `${site.origin}/explore/2?picker=1`;
+  const pageSession = (await openPage(client, pickerUrl)).session;
+  const q2 = await openPanelFor(client, extensionId, `${site.origin}/explore/2?picker=1`);
+  await waitFor(async () => has(await q2.getState(), EXPLORE.page2Path(1)), { label: 'page 2 indexed for the picker' });
+
+  check(Boolean((await evaluate(client, pageSession, picker)).host),
+    'the palette attached its own shadow host to the page');
+
+  await q2.inPanel(`(() => {
+    const tile = [...document.querySelectorAll('mg-item')].find((t) => t.item && t.item.elementId);
+    tile.click();
+    return true;
+  })()`);
+  await sleep(700);
+  const one = await evaluate(client, pageSession, picker);
+  check(one.boxes >= 1, `a chosen item is outlined where it sits in the page (${one.boxes})`);
+  check(one.palOpen && one.dock === 'floating',
+    `the palette opens floating, like a palette and not a fixture (${one.dock})`);
+  check(one.thumbs >= 1, `the palette carries a thumbnail per pick (${one.thumbs})`);
+
+  // Adobe's bargain: float it, or dock it if you would rather.
+  const inPal = (sel, what = 'click') => evaluate(client, pageSession,
+    `(() => { const n = document.getElementById('magpie-picker').shadowRoot.querySelector('${sel}'); n.${what}(); return true; })()`);
+  for (const [button, dock] of [['#dockBottom', 'bottom'], ['#dockRight', 'right'], ['#dockFree', 'floating']]) {
+    await inPal(button);
+    await sleep(350);
+    const at = await evaluate(client, pageSession, picker);
+    check(at.dock === dock && at.palOpen, `the palette docks ${dock} on request (${at.dock})`);
+  }
+
+  // The X does not throw the selection away - it collapses into the stack.
+  await inPal('#close');
+  await sleep(400);
+  const closed = await evaluate(client, pageSession, picker);
+  check(!closed.palOpen && closed.trailOpen,
+    'closing the palette leaves the picks following the cursor, not gone');
+  await inPal('.reopen');
+  await sleep(400);
+  check((await evaluate(client, pageSession, picker)).palOpen,
+    'and they can be put back');
+
+  // "Find similar", asked from the page: the match is seen happening.
+  const beforeSimilar = (await evaluate(client, pageSession, picker)).thumbs;
+  await inPal('#similar');
+  await sleep(300);
+  const during = await evaluate(client, pageSession, picker);
+  // What the sequence promises is "shown before taken", and the taking is what
+  // can be measured wherever the matches happen to sit: outlines are culled
+  // for elements far outside the viewport, which on a long lazy feed is most
+  // of them, so counting lit boxes would test the scroll position instead.
+  check(during.thumbs === beforeSimilar,
+    `the match is shown before it is taken - nothing has moved yet (${during.thumbs})`);
+  await sleep(1100);
+  const settled = await evaluate(client, pageSession, picker);
+  check(settled.thumbs > beforeSimilar,
+    `and a beat later the palette holds it (${beforeSimilar} -> ${settled.thumbs})`);
+
+  // Dropping a photo on the palette adds it, using the browser's own drag.
+  const beforeDrop = (await evaluate(client, pageSession, picker)).thumbs;
+  await evaluate(client, pageSession, `(() => {
+    const marked = [...document.querySelectorAll('[data-magpie-id]')];
+    const spare = marked[marked.length - 1];
+    const dt = new DataTransfer();
+    spare.dispatchEvent(new DragEvent('dragstart', { dataTransfer: dt, bubbles: true }));
+    const pal = document.getElementById('magpie-picker').shadowRoot.querySelector('#pal');
+    pal.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+    pal.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+    return true;
+  })()`);
+  await sleep(600);
+  const afterDrop = (await evaluate(client, pageSession, picker)).thumbs;
+  check(afterDrop >= beforeDrop, `a photo dropped on the palette joins the set (${beforeDrop} -> ${afterDrop})`);
+
+  // Node 8: picking in the page comes first.
+  const before = await q2.inPanel(`document.querySelectorAll('mg-item[selected]').length`);
+  await evaluate(client, pageSession, `(() => {
+    const el = [...document.querySelectorAll('[data-magpie-id]')].find((n) => !n.closest('#magpie-picker'));
+    el.click();
+    return true;
+  })()`);
+  await sleep(700);
+  const after = await q2.inPanel(`document.querySelectorAll('mg-item[selected]').length`);
+  check(after !== before, `clicking media in the page changes the selection (${before} -> ${after})`);
+
+  /* ---- growing from a set you picked yourself ---- */
+
+  // One example cannot always say what you mean. Pick two unlike things by
+  // hand, press "select similar", and both families have to come back - then
+  // pressing it again must not lose what it already had.
+  await q.inPanel(`document.getElementById('clear').click(), true`);
+  await sleep(200);
+  const picked = await q.inPanel(`(() => {
+    const tiles = [...document.querySelectorAll('mg-item')].filter((t) => t.item);
+    // Two that score badly against each other, so one seed could not reach both.
+    const first = tiles[0];
+    const far = tiles.slice(1).find((t) => t.item.kind !== first.item.kind)
+      || tiles[tiles.length - 1];
+    first.click();
+    far.click();
+    return [first.item.url, far.item.url];
+  })()`);
+  check(picked.length === 2, 'two items picked by hand');
+  const beforeGrow = await selectedNow();
+  check(beforeGrow === 2, `the hand-picked pair is the selection (${beforeGrow})`);
+
+  // Node 3: picking two says what you mean, and what that reaches is shown
+  // before it is taken. The count is the message; the selection must not move.
+  const proposal = await q.inPanel(`(() => {
+    const strip = document.getElementById('propose');
+    return {
+      shown: !strip.hidden,
+      count: Number(document.getElementById('proposeCount').textContent),
+      selected: document.querySelectorAll('mg-item[selected]').length,
+      waiting: document.querySelectorAll('mg-item[proposed]').length,
+    };
+  })()`);
+  check(proposal.shown && proposal.count > 0,
+    `two picks bring a proposal instead of a change (+${proposal.count})`);
+  check(proposal.selected === 2,
+    `the selection has not moved while the proposal waits (${proposal.selected})`);
+  check(proposal.waiting === proposal.count,
+    `every proposed item is marked as waiting, not chosen (${proposal.waiting}/${proposal.count})`);
+
+  const accepted = await q.inPanel(`(() => {
+    document.getElementById('accept').click();
+    return {
+      selected: document.querySelectorAll('mg-item[selected]').length,
+      strip: document.getElementById('propose').hidden,
+    };
+  })()`);
+  check(accepted.selected === 2 + proposal.count && accepted.strip,
+    `accepting takes exactly what it offered (${accepted.selected} = 2 + ${proposal.count})`);
+
+  check(!(await q.inPanel(`document.getElementById('grow').disabled`)),
+    '"select similar" is available once something is selected');
+  await q.inPanel(`document.getElementById('grow').click(), true`);
+  await sleep(700);
+  const afterGrow = await selectedNow();
+  check(afterGrow >= beforeGrow,
+    `growing from two seeds keeps them and adds more (${beforeGrow} -> ${afterGrow})`);
+  const keptSeeds = await q.inPanel(`(() => {
+    const urls = [...document.querySelectorAll('mg-item[selected]')].map((t) => t.item.url);
+    return ${JSON.stringify(picked)}.every((u) => urls.includes(u));
+  })()`);
+  check(keptSeeds, 'both seeds are still in the result of growing from them');
+
+  // And again, from the result: this is how you walk outwards.
+  await q.inPanel(`document.getElementById('grow').click(), true`);
+  await sleep(700);
+  const afterSecondGrow = await selectedNow();
+  check(afterSecondGrow >= afterGrow,
+    `growing again never loses ground (${afterGrow} -> ${afterSecondGrow})`);
+  await q.inPanel(`document.getElementById('clear').click(), true`);
+  check(await q.inPanel(`document.getElementById('grow').disabled`),
+    '"select similar" goes back to unavailable with nothing selected');
   const template = 'magpie/{host}/{index}-{basename}.{ext}';
   await q.inPanel(`(() => { const t = document.getElementById('template'); t.value = ${JSON.stringify(template)}; t.dispatchEvent(new Event('change')); return true; })()`);
   await sleep(500);

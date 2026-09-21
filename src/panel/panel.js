@@ -10,9 +10,11 @@ import './components/mg-item.js';
 import './components/mg-group.js';
 
 import {
-  cluster, clusterChunked, selectSimilar, describeGroup,
+  cluster, clusterChunked, selectSimilarToAny, describeGroup,
 } from '../core/similarity.js';
-import { SIMILARITY_PRESETS, FILTER_CONFIG } from '../core/media-types.js';
+import {
+  SIMILARITY_RANGE, FILTER_CONFIG, resolveThreshold, thresholdName,
+} from '../core/media-types.js';
 import {
   formatBytes, applyTemplate, tokensFor, DEFAULT_TEMPLATE, sanitizeSegment,
 } from '../core/filename.js';
@@ -26,6 +28,8 @@ import { MSG } from '../shared/messages.js';
 /** Above this many items, clustering is skipped for the remainder and said so. */
 const CLUSTER_LIMIT = 1200;
 const REFRESH_DEBOUNCE_MS = 220;
+/** Matches the moment the page holds the flash for, so the two line up. */
+const FLASH_MS = 900;
 
 /**
  * The one place a stream variant's columns are defined. The header row and the
@@ -48,6 +52,8 @@ const el = {
   totals: $('totals'),
   search: $('search'),
   threshold: $('threshold'),
+  pickMode: $('pick-mode'),
+  thresholdRead: $('threshold-read'),
   rescan: $('rescan'),
   minDim: $('min-dim'),
   minKb: $('min-kb'),
@@ -67,6 +73,11 @@ const el = {
   stop: $('stop'),
   template: $('template'),
   selection: $('selection'),
+  grow: $('grow'),
+  propose: $('propose'),
+  proposeCount: $('proposeCount'),
+  accept: $('accept'),
+  ignore: $('ignore'),
   clear: $('clear'),
   download: $('download'),
 };
@@ -83,8 +94,20 @@ const state = {
   historyCount: 0,
   emeRequested: false,
   selected: new Set(),
-  seedId: null,
+  /**
+   * The items the current selection was grown from. A set, not one item: two
+   * or three examples say what you mean where one cannot, and growing again
+   * from the result is how you walk outwards.
+   */
+  seedIds: [],
   seedScores: new Map(),
+  /**
+   * What Magpie would add, shown and not taken. Picking two photos says what
+   * you mean; it should not also decide how far that goes without showing you.
+   */
+  proposed: new Set(),
+  /** Set once you refuse, so the same proposal does not come straight back. */
+  proposalRefused: false,
   expandedId: null,
   groups: [],
   notClustered: 0,
@@ -166,7 +189,13 @@ async function refresh({ consumeSeed = false } = {}) {
   if (state.notice && state.items.length) state.notice = '';
 
   if (!el.template.value) el.template.value = state.options.filenameTemplate || DEFAULT_TEMPLATE;
-  if (state.options.threshold) el.threshold.value = state.options.threshold;
+  // The option used to hold a preset name and now holds a number; resolve
+  // either, so an existing setting survives the update.
+  if (state.options.threshold != null) {
+    el.threshold.value = String(resolveThreshold(state.options.threshold));
+  }
+  updateThresholdRead();
+  if (state.options.pickMode) el.pickMode.value = state.options.pickMode;
 
   // Drop selections whose items are gone (navigation, filter change).
   const live = new Set(state.items.map((i) => i.id));
@@ -174,7 +203,7 @@ async function refresh({ consumeSeed = false } = {}) {
 
   if (consumeSeed && response.seed) {
     const seedItem = state.items.find((i) => i.normalizedUrl === response.seed);
-    if (seedItem) applySeed(seedItem);
+    if (seedItem) applySeeds([seedItem]);
   }
 
   await render();
@@ -185,7 +214,21 @@ async function refresh({ consumeSeed = false } = {}) {
  * ------------------------------------------------------------------ */
 
 function currentThreshold() {
-  return SIMILARITY_PRESETS[el.threshold.value] || SIMILARITY_PRESETS.balanced;
+  return resolveThreshold(el.threshold.value);
+}
+
+/**
+ * The number beside the slider, and the preset it reads as. While a seed is
+ * active it also says how many items the current setting takes - that count is
+ * the whole reason to touch the slider, and watching it move is what tells you
+ * where to stop.
+ */
+function updateThresholdRead() {
+  const value = currentThreshold();
+  const parts = [value.toFixed(2), thresholdName(value)];
+  if (state.seedIds.length) parts.push(`· ${state.selected.size} selected`);
+  el.thresholdRead.textContent = parts.join(' ');
+  el.thresholdRead.dataset.live = state.seedIds.length ? '1' : '0';
 }
 
 function filtered() {
@@ -388,6 +431,11 @@ function updateSelectionUi() {
     el.selection.appendChild(note);
   }
   el.download.disabled = downloadable.length === 0;
+  // Growing needs something to grow from, and nothing else: a single hand-picked
+  // tile is a legitimate starting point, and so is the result of the last grow.
+  el.grow.disabled = items.length === 0;
+  updateProposal(items);
+  showInPage(items);
 
   for (const node of el.body.querySelectorAll('mg-group')) {
     const tiles = [...node.querySelectorAll('mg-item')];
@@ -399,17 +447,98 @@ function updateSelectionUi() {
 
 function clearSelection() {
   for (const id of [...state.selected]) setSelected(id, false);
-  state.seedId = null;
+  state.seedIds = [];
   state.seedScores.clear();
+  state.proposed.clear();
+  state.proposalRefused = false;
   for (const tile of el.body.querySelectorAll('mg-item')) tile.score = null;
   updateSelectionUi();
+  updateThresholdRead();
 }
 
-/** Re-run scoring with this item as the seed and select everything similar. */
-function applySeed(seed) {
+/**
+ * Re-run scoring against these seeds and select everything like any of them.
+ * Passing the current selection back in is what "grow" does, so the same call
+ * serves one example, several, and each step outwards from there.
+ */
+/**
+ * "Find similar", asked from the page.
+ *
+ * The match is flashed in place first and taken a beat later, so the answer is
+ * seen happening rather than simply appearing - which is also the only moment
+ * you get to notice it reached somewhere you did not mean.
+ */
+function findSimilarFromPage() {
+  const seeds = selectedItems();
+  if (!seeds.length) return;
+  const matches = selectSimilarToAny(seeds, filtered(), currentThreshold())
+    .map((m) => m.item)
+    .filter((i) => !state.selected.has(i.id));
+  if (!matches.length) return;
+
+  toTab({
+    type: MSG.FLASH_MATCHES,
+    items: matches.map((i) => ({ id: i.elementId || '', url: i.previewUrl || i.url })),
+  });
+  setTimeout(() => {
+    for (const item of matches) setSelected(item.id, true);
+    updateSelectionUi();
+  }, FLASH_MS);
+}
+
+/**
+ * Two or more picked is a statement about what you want; everything like them
+ * is the consequence. The consequence is shown, not applied - the count in the
+ * strip is the part that matters, because it says how far "like these" reaches
+ * before anything moves.
+ * @param {object[]} items
+ */
+function updateProposal(items) {
+  state.proposed.clear();
+  if (items.length >= 2 && !state.proposalRefused) {
+    const matches = selectSimilarToAny(items, filtered(), currentThreshold());
+    for (const m of matches) {
+      if (!state.selected.has(m.item.id)) state.proposed.add(m.item.id);
+    }
+  }
+  el.propose.hidden = state.proposed.size === 0;
+  el.proposeCount.textContent = String(state.proposed.size);
+  for (const tile of el.body.querySelectorAll('mg-item')) {
+    const id = tile.item ? tile.item.id : null;
+    tile.toggleAttribute('proposed', state.proposed.has(id));
+  }
+}
+
+/**
+ * Draw the selection in the page itself. The panel is 400px of thumbnails; the
+ * photographs are over there, so that is where the set should be visible. Which
+ * of the four ways is right is a question about how it feels, so all four ship
+ * and the switch picks one.
+ * @param {object[]} items
+ */
+function showInPage(items) {
+  toTab({
+    type: MSG.SHOW_SELECTION,
+    mode: el.pickMode.value,
+    picking: true,
+    chosen: items.map((i) => ({ id: i.elementId || '', url: i.previewUrl || i.url })),
+    pending: [...state.proposed]
+      .map((id) => findItem(id))
+      .filter(Boolean)
+      .map((i) => ({ id: i.elementId || '', url: i.previewUrl || i.url })),
+  });
+}
+
+/** The seed items still present in the index, as objects. */
+function currentSeeds() {
+  return state.seedIds.map((id) => findItem(id)).filter(Boolean);
+}
+
+function applySeeds(seeds) {
+  if (!seeds.length) return;
   const threshold = currentThreshold();
-  const matches = selectSimilar(seed, filtered(), threshold);
-  state.seedId = seed.id;
+  const matches = selectSimilarToAny(seeds, filtered(), threshold);
+  state.seedIds = seeds.map((s) => s.id);
   state.seedScores = new Map(matches.map((m) => [m.item.id, m.score]));
   state.selected = new Set(matches.map((m) => m.item.id));
   for (const tile of el.body.querySelectorAll('mg-item')) {
@@ -418,6 +547,7 @@ function applySeed(seed) {
     tile.score = state.seedScores.has(id) ? state.seedScores.get(id) : null;
   }
   updateSelectionUi();
+  updateThresholdRead();
 }
 
 /* ------------------------------------------------------------------ *
@@ -491,7 +621,7 @@ function showDetail(item) {
     button('open in new tab', () => chrome.tabs.create({ url: item.url, active: false }), {
       disabled: item.url.startsWith('magpie-'),
     }),
-    button('select similar to this', () => applySeed(item)),
+    button('select similar to this', () => applySeeds([item])),
   );
   if (item.elementId) {
     actions.appendChild(
@@ -799,7 +929,7 @@ async function downloadItems(items) {
     ids: network.map((i) => i.id),
     template: el.template.value || DEFAULT_TEMPLATE,
     writeSidecar: Boolean(state.options.writeSidecar),
-    groupLabel: state.seedId ? 'similar' : '',
+    groupLabel: state.seedIds.length ? 'similar' : '',
   });
   if (response.ok) {
     state.sessionId = response.sessionId;
@@ -916,17 +1046,30 @@ el.search.addEventListener('input', () => {
   searchTimer = setTimeout(render, 150);
 });
 
+/**
+ * Dragging the slider answers immediately, because a filter you cannot feel is
+ * a filter you cannot aim. Re-running the selection is linear in the number of
+ * items, so it happens on every frame of the drag; re-grouping is quadratic,
+ * so it waits for a pause.
+ */
+let regroupTimer = null;
+
+el.threshold.addEventListener('input', () => {
+  const seeds = currentSeeds();
+  if (seeds.length) applySeeds(seeds); // also refreshes the readout
+  else updateThresholdRead();
+  if (regroupTimer) clearTimeout(regroupTimer);
+  regroupTimer = setTimeout(async () => {
+    regroupTimer = null;
+    await render();
+    const again = currentSeeds();
+    if (again.length) applySeeds(again); // render() rebuilt the tiles; re-mark them
+  }, 200);
+});
+
+// Only the settled value is worth storing: `input` fires on every pixel.
 el.threshold.addEventListener('change', async () => {
-  await send({ type: MSG.SET_OPTIONS, options: { threshold: el.threshold.value } });
-  if (state.seedId) {
-    const seed = findItem(state.seedId);
-    if (seed) {
-      await render();
-      applySeed(seed);
-      return;
-    }
-  }
-  render();
+  await send({ type: MSG.SET_OPTIONS, options: { threshold: currentThreshold() } });
 });
 
 for (const input of [el.minDim, el.minKb]) input.addEventListener('change', render);
@@ -983,6 +1126,27 @@ el.explore.addEventListener('click', async () => {
     return;
   }
   renderCrawlStatus(response.status);
+});
+
+// "Select similar" grows from whatever is selected right now - picked by hand,
+// or produced by the last press. Pressing it again walks one step further out.
+el.grow.addEventListener('click', () => applySeeds(selectedItems()));
+el.accept.addEventListener('click', () => {
+  for (const id of state.proposed) setSelected(id, true);
+  state.proposed.clear();
+  updateSelectionUi();
+});
+
+el.ignore.addEventListener('click', () => {
+  // Refused once, and it stays refused until the selection is cleared: a
+  // proposal that returns after you said no is not a proposal.
+  state.proposalRefused = true;
+  updateSelectionUi();
+});
+
+el.pickMode.addEventListener('change', async () => {
+  await send({ type: MSG.SET_OPTIONS, options: { pickMode: el.pickMode.value } });
+  showInPage(selectedItems());
 });
 
 el.clear.addEventListener('click', clearSelection);
@@ -1042,6 +1206,32 @@ document.addEventListener('keydown', (event) => {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || typeof message.type !== 'string') return;
+  // Picking happens in the page first: the photographs are there, the tiles are
+  // 80px. The page sends the element it was told to mark; the panel owns what
+  // that means.
+  if (message.type === MSG.PAGE_PICK) {
+    // The palette in the page is the surface now, so it drives: where it was
+    // docked, what it was asked to find, what it was asked to fetch.
+    if (typeof message.pickMode === 'string') {
+      el.pickMode.value = message.pickMode;
+      send({ type: MSG.SET_OPTIONS, options: { pickMode: message.pickMode } });
+      return;
+    }
+    if (message.findSimilar) {
+      findSimilarFromPage();
+      return;
+    }
+    if (message.download) {
+      downloadItems(selectedItems());
+      return;
+    }
+    const item = state.items.find((i) => i.elementId && i.elementId === message.elementId);
+    if (!item) return;
+    // A drop says "add"; a click says "toggle".
+    setSelected(item.id, message.add ? true : !state.selected.has(item.id));
+    updateSelectionUi();
+    return;
+  }
   if (message.type === 'explore-progress') {
     if (message.tabId === state.tabId) renderCrawlStatus(message.status);
     return;
@@ -1086,6 +1276,13 @@ chrome.tabs.onActivated.addListener(async () => {
  * ------------------------------------------------------------------ */
 
 (async function boot() {
+  // The markup carries a sane default so the control is usable before any
+  // script runs, but the band itself is defined once, in core.
+  el.threshold.min = String(SIMILARITY_RANGE.min);
+  el.threshold.max = String(SIMILARITY_RANGE.max);
+  el.threshold.step = String(SIMILARITY_RANGE.step);
+  updateThresholdRead();
+
   state.tabId = await resolveTabId();
   el.template.value = DEFAULT_TEMPLATE;
   await refresh({ consumeSeed: true });
@@ -1093,8 +1290,8 @@ chrome.tabs.onActivated.addListener(async () => {
   const crawl = await send({ type: 'explore-status' });
   if (crawl.ok && crawl.status) renderCrawlStatus(crawl.status);
   // A seed arriving from the context menu should be visible immediately.
-  if (state.seedId) {
-    const tile = document.getElementById(`item-${state.seedId}`);
+  if (state.seedIds.length) {
+    const tile = document.getElementById(`item-${state.seedIds[0]}`);
     if (tile) tile.scrollIntoView({ block: 'center' });
   }
 })();
